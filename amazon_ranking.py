@@ -44,12 +44,22 @@ logger = logging.getLogger("AmazonRanker")
 # GOOGLE AUTHENTICATION CLIENT
 # ==========================================
 def get_gspread_client():
-    sa_key_b64 = os.getenv("GCP_SA_KEY")
+    sa_key_env = os.getenv("GCP_SA_KEY")
     
-    if sa_key_b64:
-        # Base64 string ko memory me decode karke authenticate karega
-        decoded_json_str = base64.b64decode(sa_key_b64).decode("utf-8")
-        creds_dict = json.loads(decoded_json_str)
+    if sa_key_env:
+        sa_key_str = sa_key_env.strip()
+        
+        # 1. First try: Direct JSON parse (agar secret me direct JSON pasted hai)
+        try:
+            creds_dict = json.loads(sa_key_str)
+        except json.JSONDecodeError:
+            # 2. Second try: Base64 decode (agar secret me Base64 encoded string hai)
+            try:
+                decoded_bytes = base64.b64decode(sa_key_str)
+                creds_dict = json.loads(decoded_bytes.decode("utf-8"))
+            except Exception as e:
+                raise ValueError(f"GCP_SA_KEY secret na to valid JSON hai na valid Base64 string. Error: {str(e)}")
+                
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     elif os.path.exists("G_CREDENTIAL.json"):
         creds = Credentials.from_service_account_file("G_CREDENTIAL.json", scopes=SCOPES)
