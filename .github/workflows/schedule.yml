@@ -6,7 +6,7 @@ on:
     - cron: '30 22 * * *'
     # IST 01:00 PM (07:30 UTC)
     - cron: '30 7 * * *'
-  workflow_dispatch:
+ + workflow_dispatch:
 
 jobs:
   run-ranker:
