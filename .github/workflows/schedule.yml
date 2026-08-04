@@ -6,7 +6,7 @@ on:
     - cron: '30 22 * * *'
     # IST 01:00 PM (07:30 UTC)
     - cron: '30 7 * * *'
- + workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
   run-ranker:
@@ -21,16 +21,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install Google Service Account Credentials
-        run: |
-          cat << 'EOF' > G_CREDENTIAL.json
-          ${{ secrets.GCP_SA_KEY }}
-          EOF
-
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
       - name: Run Amazon Ranker Script
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: python amazon_ranking.py
