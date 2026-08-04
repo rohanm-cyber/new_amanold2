@@ -16,10 +16,12 @@ from google.oauth2.service_account import Credentials
 from selenium import webdriver
 from selenium.common.exceptions import TimeoutException, WebDriverException
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ==========================================
 # GLOBAL CONFIG & LOGGING
@@ -49,11 +51,11 @@ def get_gspread_client():
     if sa_key_env:
         sa_key_str = sa_key_env.strip()
         
-        # 1. First try: Direct JSON parse (agar secret me direct JSON pasted hai)
+        # 1. Direct JSON parse
         try:
             creds_dict = json.loads(sa_key_str)
         except json.JSONDecodeError:
-            # 2. Second try: Base64 decode (agar secret me Base64 encoded string hai)
+            # 2. Base64 decode
             try:
                 decoded_bytes = base64.b64decode(sa_key_str)
                 creds_dict = json.loads(decoded_bytes.decode("utf-8"))
@@ -108,33 +110,34 @@ class AmazonOrganicRanker:
         self.max_retries = max_retries
         self.driver: Optional[webdriver.Chrome] = None
 
-    def get_driver():
-            options = Options()
-            
-            # Anti-bot detection aur Headless mode setup
-            options.add_argument('--headless=new')  # Latest Chrome headless mode
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            options.add_argument('--disable-gpu')
-            options.add_argument('--blink-settings=imagesEnabled=false')  # Images disable karke speed badhane ke liye
-            
-            # Realistic User-Agent taaki Amazon block na kare
-            user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            options.add_argument(f'user-agent={user_agent}')
-            
-            # Automation flags hide karne ke liye
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_experimental_option('useAutomationExtension', False)
-        
-            driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()), 
-                options=options
-            )
-            
-            # Page Load Timeout 30 seconds set karein
-            driver.set_page_load_timeout(30)
-            return driver
+    def _init_driver(self):
+        """Chrome Driver Driver ko initialize karta hai (Fixed & Optimized)"""
+        if self.driver:
+            return
+
+        options = Options()
+        options.add_argument('--headless=new')
+        options.add_argument('--no-sandbox')
+        options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-gpu')
+        options.add_argument('--window-size=1920,1080')
+        options.add_argument('--blink-settings=imagesEnabled=false')
+        options.add_argument('--lang=en-US,en;q=0.9')
+
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        options.add_argument(f'user-agent={user_agent}')
+
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+
+        options.page_load_strategy = 'eager'  # Timeout fix karne ke liye
+
+        self.driver = webdriver.Chrome(
+            service=Service(ChromeDriverManager().install()),
+            options=options
+        )
+        self.driver.set_page_load_timeout(35)
 
     def close(self):
         if self.driver:
@@ -266,7 +269,7 @@ class AmazonOrganicRanker:
         return False
 
     def _verify_pdp_brand(self, pdp_url: str, target_brand: str) -> bool:
-        if not target_brand:
+        if not target_brand or not self.driver:
             return False
 
         current_window = self.driver.current_window_handle
@@ -340,7 +343,10 @@ class AmazonOrganicRanker:
             encoded_keyword = urllib.parse.quote_plus(query.keyword)
             search_url = f"{self.marketplace_url}/s?k={encoded_keyword}" if page_num == 1 else f"{self.marketplace_url}/s?k={encoded_keyword}&page={page_num}"
 
-            self.driver.get(search_url)
+            try:
+                self.driver.get(search_url)
+            except TimeoutException:
+                logger.warning(f"Timeout loading search page {page_num}, attempting DOM read anyway...")
 
             if self._check_for_bot_detection():
                 logger.error("Terminating workflow due to CAPTCHA.")
@@ -349,11 +355,11 @@ class AmazonOrganicRanker:
             self.driver.execute_script("window.scrollBy(0, 600);")
 
             try:
-                WebDriverWait(self.driver, 12).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']"))
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result'], div.s-result-item[data-asin]"))
                 )
             except TimeoutException:
-                logger.warning(f"Timeout waiting for search results on page {page_num}.")
+                logger.warning(f"Timeout waiting for elements on page {page_num}.")
                 break
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
@@ -432,7 +438,6 @@ def fetch_keywords_and_sync_results(
     batch_size: int = 100,
     batch_delay_seconds: float = 60.0
 ):
-    # Dynamic Authentication Client Connection
     client = get_gspread_client()
     sheet = client.open(spreadsheet_name)
 
@@ -491,7 +496,7 @@ def fetch_keywords_and_sync_results(
             print(f"\n--- Batch pause: Processed {idx}/{total_keywords} keywords. Pausing for {int(batch_delay_seconds)} seconds... ---\n")
             time.sleep(batch_delay_seconds)
         else:
-            time.sleep(2)
+            time.sleep(3)
 
     ranker.close()
     logger.info("All processing complete! All rows saved live.")
