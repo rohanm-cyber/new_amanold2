@@ -6,7 +6,7 @@ on:
     - cron: '30 22 * * *'
     # IST 01:00 PM (07:30 UTC)
     - cron: '30 7 * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   run-ranker:
@@ -23,7 +23,9 @@ jobs:
 
       - name: Install Google Service Account Credentials
         run: |
-          echo "${{ secrets.GCP_SA_KEY }}" > "G_CREDENTIAL.json"
+          cat << 'EOF' > G_CREDENTIAL.json
+          ${{ secrets.GCP_SA_KEY }}
+          EOF
 
       - name: Install Dependencies
         run: |
