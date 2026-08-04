@@ -484,7 +484,7 @@ def fetch_keywords_and_sync_results(
 # RUNNER / ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
-    CREDENTIALS_JSON = "GOOGLE_CRED.json"
+    CREDENTIALS_JSON = "AMAZON_KEYWORD.json"
     SPREADSHEET_NAME = "Keywords_Research"
     INPUT_SHEET_NAME = "Keywords_input"
     OUTPUT_SHEET_NAME = "Keywords_output"
