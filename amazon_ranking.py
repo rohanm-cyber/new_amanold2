@@ -1,4 +1,6 @@
+import base64
 import gc
+import json
 import logging
 import os
 import re
@@ -7,7 +9,6 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import List, Optional
-import json
 
 import gspread
 from bs4 import BeautifulSoup
@@ -21,8 +22,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
 # ==========================================
-# LOGGING CONFIGURATION
+# GLOBAL CONFIG & LOGGING
 # ==========================================
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+]
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -32,6 +38,25 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("AmazonRanker")
+
+
+# ==========================================
+# GOOGLE AUTHENTICATION CLIENT
+# ==========================================
+def get_gspread_client():
+    sa_key_b64 = os.getenv("GCP_SA_KEY")
+    
+    if sa_key_b64:
+        # Base64 string ko memory me decode karke authenticate karega
+        decoded_json_str = base64.b64decode(sa_key_b64).decode("utf-8")
+        creds_dict = json.loads(decoded_json_str)
+        creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
+    elif os.path.exists("G_CREDENTIAL.json"):
+        creds = Credentials.from_service_account_file("G_CREDENTIAL.json", scopes=SCOPES)
+    else:
+        raise FileNotFoundError("GCP_SA_KEY environment variable ya G_CREDENTIAL.json file nahi mili.")
+
+    return gspread.authorize(creds)
 
 
 # ==========================================
@@ -192,40 +217,32 @@ class AmazonOrganicRanker:
 
     @staticmethod
     def _normalize_brand_string(brand: str) -> str:
-        """Cleans brand names without stripping operational product words."""
         if not brand:
             return ""
         normalized = brand.lower()
-        # Sirf corporate suffixes ko remove karein, product descriptive words (like pillowcase) ko safe rakhein
         normalized = re.sub(r'\b(store|official|inc|llc|co|direct)\b', '', normalized)
         return normalized.strip()
 
     def _is_brand_match(self, target_brand: str, raw_title: str, raw_brand_attr: Optional[str] = None) -> bool:
-        """Robust multi-layered brand identification that ignores trailing listing terms like 'pillowcase'."""
         if not target_brand or not raw_title:
             return False
 
         norm_target = self._normalize_brand_string(target_brand)
         
-        # 1. Check direct Amazon 'data-brand' attribute first if available
         if raw_brand_attr:
             norm_brand_attr = self._normalize_brand_string(raw_brand_attr)
             if norm_target in norm_brand_attr or norm_brand_attr in norm_target:
                 return True
 
-        # 2. Flexible Word-Boundary Regex Check in Title
-        # Ye 'Pillowcase', 'Set', 'Bed Sheet' jise trailing words hone par bhi Brand Name detect kar lega
         clean_title = raw_title.lower()
         target_words = norm_target.split()
         
-        # Ensures all words of target brand (e.g., 'linen' AND 'home') exist in title
         if all(re.search(rf"\b{re.escape(word)}\b", clean_title) for word in target_words):
             return True
 
         return False
 
     def _verify_pdp_brand(self, pdp_url: str, target_brand: str) -> bool:
-        """Verified brand directly from Product Detail Page (PDP)"""
         if not target_brand:
             return False
 
@@ -236,21 +253,17 @@ class AmazonOrganicRanker:
             self.driver.switch_to.window(self.driver.window_handles[-1])
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-
             brand_sources = []
 
-            # 1. Byline Info
             byline = soup.select_one("#bylineInfo")
             if byline:
                 brand_sources.append(byline.get_text(strip=True))
 
-            # 2. Product Overview Table
             overview_rows = soup.select("#productOverview_feature_div tr")
             for row in overview_rows:
                 if "brand" in row.get_text().lower():
                     brand_sources.append(row.get_text(strip=True))
 
-            # 3. Meta Data
             meta_brand = soup.select_one("meta[name='title']")
             if meta_brand and meta_brand.get("content"):
                 brand_sources.append(meta_brand["content"])
@@ -338,11 +351,9 @@ class AmazonOrganicRanker:
                 title_el = item.select_one("h2 a span") or item.select_one("h2 a") or item.select_one(".a-size-base-plus.a-color-base")
                 title = title_el.get_text(strip=True) if title_el else "N/A"
 
-                # Direct Match Check 1: Fast DOM / Title
                 raw_brand_attr = item.get('data-brand', '')
                 is_match = self._is_brand_match(query.target_brand, title, raw_brand_attr)
 
-                # Direct Match Check 2: Dynamic Deep Verification via PDP (Fallback)
                 if not is_match and query.target_brand:
                     title_link = item.select_one("h2 a")
                     if title_link and title_link.get("href"):
@@ -391,7 +402,6 @@ class AmazonOrganicRanker:
 # REAL-TIME LIVE GOOGLE SHEETS INTEGRATION
 # ==========================================
 def fetch_keywords_and_sync_results(
-    json_key_path: str,
     spreadsheet_name: str,
     input_sheet_name: str,
     output_sheet_name: str,
@@ -399,24 +409,8 @@ def fetch_keywords_and_sync_results(
     batch_size: int = 100,
     batch_delay_seconds: float = 60.0
 ):
-    if not os.path.exists(json_key_path):
-        if os.path.exists("Credentials.json"):
-            json_key_path = "Credentials.json"
-        elif os.path.exists("credentials.json"):
-            json_key_path = "credentials.json"
-        else:
-            logger.error(f"Credentials JSON file not found at '{json_key_path}'!")
-            return
-
-    logger.info(f"Connecting to Google Sheets using: {json_key_path}")
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive"
-    ]
-
-    creds = Credentials.from_service_account_file(json_key_path, scopes=scope)
-    client = gspread.authorize(creds)
-
+    # Dynamic Authentication Client Connection
+    client = get_gspread_client()
     sheet = client.open(spreadsheet_name)
 
     try:
@@ -484,7 +478,6 @@ def fetch_keywords_and_sync_results(
 # RUNNER / ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
-    CREDENTIALS_JSON = "G_CREDENTIAL.json"
     SPREADSHEET_NAME = "Keywords_Research"
     INPUT_SHEET_NAME = "Keywords_input"
     OUTPUT_SHEET_NAME = "Keywords_output"
@@ -499,7 +492,6 @@ if __name__ == "__main__":
     )
 
     fetch_keywords_and_sync_results(
-        json_key_path=CREDENTIALS_JSON,
         spreadsheet_name=SPREADSHEET_NAME,
         input_sheet_name=INPUT_SHEET_NAME,
         output_sheet_name=OUTPUT_SHEET_NAME,
