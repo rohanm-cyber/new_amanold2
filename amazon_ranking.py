@@ -111,8 +111,8 @@ class AmazonOrganicRanker:
         self.driver: Optional[webdriver.Chrome] = None
 
     def _init_driver(self):
-        """Chrome Driver initialization with aggressive anti-timeout settings"""
-        if self.driver:
+        """Chrome Driver initialization with fallback mechanism"""
+        if self.driver is not None:
             return
 
         options = Options()
@@ -121,7 +121,7 @@ class AmazonOrganicRanker:
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--window-size=1920,1080')
-        options.add_argument('--blink-settings=imagesEnabled=false')  # Images disabled for speed
+        options.add_argument('--blink-settings=imagesEnabled=false')
         options.add_argument('--lang=en-US,en;q=0.9')
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -130,19 +130,22 @@ class AmazonOrganicRanker:
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-
-        # CRITICAL FIX FOR TIMEOUTS:
-        # 'eager' tells Selenium to proceed as soon as HTML is downloaded (DOM Interactive),
-        # without waiting for slow ad scripts/images to finish loading.
         options.page_load_strategy = 'eager'
 
-        self.driver = webdriver.Chrome(
-            service=Service(ChromeDriverManager().install()),
-            options=options
-        )
-        # Increased script load limits
-        self.driver.set_page_load_timeout(45)
-        self.driver.set_script_timeout(45)   
+        try:
+            service = Service(ChromeDriverManager().install())
+            self.driver = webdriver.Chrome(service=service, options=options)
+        except Exception as e:
+            logger.warning(f"ChromeDriverManager failed: {e}. Trying default system driver...")
+            self.driver = webdriver.Chrome(options=options)
+
+        if self.driver:
+            self.driver.set_page_load_timeout(45)
+            self.driver.set_script_timeout(45)
+        else:
+            raise RuntimeError("Failed to initialize Chrome WebDriver.")
+
+    def close(self):
         if self.driver:
             logger.info("Closing Chrome Browser.")
             try:
@@ -154,21 +157,27 @@ class AmazonOrganicRanker:
     def _check_for_bot_detection(self) -> bool:
         if not self.driver:
             return False
-        page_source = self.driver.page_source.lower()
-        title = self.driver.title.lower()
+        try:
+            page_source = (self.driver.page_source or "").lower()
+            title = (self.driver.title or "").lower()
 
-        captcha_indicators = [
-            "robot check",
-            "enter the characters you see below",
-            "sorry, we just need to make sure you're not a robot"
-        ]
+            captcha_indicators = [
+                "robot check",
+                "enter the characters you see below",
+                "sorry, we just need to make sure you're not a robot"
+            ]
 
-        if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
-            logger.warning("[!] CAPTCHA Detected on Amazon!")
-            return True
+            if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
+                logger.warning("[!] CAPTCHA Detected on Amazon!")
+                return True
+        except Exception as e:
+            logger.error(f"Error checking bot detection: {e}")
         return False
 
     def update_and_verify_zip(self) -> bool:
+        if not self.driver:
+            self._init_driver()
+
         if not self.zip_code or not self.driver:
             return True
 
@@ -295,7 +304,7 @@ class AmazonOrganicRanker:
 
             meta_brand = soup.select_one("meta[name='title']")
             if meta_brand and meta_brand.get("content"):
-                brand_sources.append(meta_brand["content"])
+                brand_sources.append(meta_brand.get("content", ""))
 
             combined_pdp_text = " ".join(brand_sources)
             norm_target = self._normalize_brand_string(target_brand)
@@ -308,7 +317,7 @@ class AmazonOrganicRanker:
             return False
         finally:
             try:
-                if len(self.driver.window_handles) > 1:
+                if self.driver and len(self.driver.window_handles) > 1:
                     self.driver.close()
                     self.driver.switch_to.window(current_window)
             except Exception:
@@ -316,16 +325,19 @@ class AmazonOrganicRanker:
 
     @staticmethod
     def _is_non_organic_placement(element) -> bool:
-        component_type = element.get('data-component-type', '')
+        if not element:
+            return True
+
+        component_type = element.get('data-component-type', '') or ''
         if component_type in ['s-ads-creative-desktop', 'sp-sponsored-result', 's-shopping-ad-widget', 's-video-widget']:
             return True
 
-        classes = element.get('class', [])
+        classes = element.get('class', []) or []
         class_str = ' '.join(classes).lower()
         if any(ad_cls in class_str for ad_cls in ['adholder', 's-sponsored-header', 'puis-sponsored-label-text']):
             return True
 
-        cel_widget = element.get('data-cel-widget', '').lower()
+        cel_widget = (element.get('data-cel-widget', '') or '').lower()
         if any(ad_kw in cel_widget for ad_kw in ['s-blended-spons', 's-sponsored', 'search-results_ad']):
             return True
 
@@ -346,50 +358,48 @@ class AmazonOrganicRanker:
             encoded_keyword = urllib.parse.quote_plus(query.keyword)
             search_url = f"{self.marketplace_url}/s?k={encoded_keyword}" if page_num == 1 else f"{self.marketplace_url}/s?k={encoded_keyword}&page={page_num}"
 
-            # Safely navigate with retry on Timeout
             try:
-                self.driver.get(search_url)
+                if self.driver:
+                    self.driver.get(search_url)
             except TimeoutException:
-                logger.warning(f"Timeout loading page {page_num}. Attempting to parse loaded DOM anyway...")
+                logger.warning(f"Timeout loading search page {page_num}, attempting DOM read anyway...")
                 try:
-                    self.driver.execute_script("window.stop();") # Stop background resource loading
+                    if self.driver:
+                        self.driver.execute_script("window.stop();")
                 except Exception:
                     pass
 
             if self._check_for_bot_detection():
-                logger.error("Terminating workflow due to CAPTCHA/Bot Detection.")
+                logger.error("Terminating workflow due to CAPTCHA.")
                 return self._build_empty_result(query)
 
-            # Scroll down to trigger lazy loading
             try:
-                self.driver.execute_script("window.scrollBy(0, 800);")
+                if self.driver:
+                    self.driver.execute_script("window.scrollBy(0, 800);")
             except Exception:
                 pass
 
-            # Wait for search results container safely
             try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.any_of(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.s-result-item[data-asin]")),
-                        EC.presence_of_element_located((By.CSS_SELECTOR, ".s-main-slot"))
+                if self.driver:
+                    WebDriverWait(self.driver, 12).until(
+                        EC.any_of(
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']")),
+                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.s-result-item[data-asin]"))
+                        )
                     )
-                )
             except TimeoutException:
-                logger.warning(f"Timeout waiting for elements on page {page_num}. Continuing with current page source.")
+                logger.warning(f"Timeout waiting for elements on page {page_num}.")
 
-            # Parse page using BeautifulSoup
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            soup = BeautifulSoup(self.driver.page_source if self.driver else "", 'html.parser')
             result_items = soup.select("div[data-component-type='s-search-result']") or soup.select("div.s-result-item[data-asin]")
-
-            if not result_items:
-                logger.warning(f"No result items parsed on page {page_num}. Stopping pagination.")
-                break
 
             page_organic_position = 0
 
             for item in result_items:
-                extracted_asin = item.get('data-asin', '').strip()
+                if not item:
+                    continue
+
+                extracted_asin = (item.get('data-asin', '') or '').strip()
 
                 if not extracted_asin or extracted_asin in seen_asins or self._is_non_organic_placement(item):
                     continue
@@ -401,13 +411,13 @@ class AmazonOrganicRanker:
                 title_el = item.select_one("h2 a span") or item.select_one("h2 a") or item.select_one(".a-size-base-plus.a-color-base")
                 title = title_el.get_text(strip=True) if title_el else "N/A"
 
-                raw_brand_attr = item.get('data-brand', '')
+                raw_brand_attr = item.get('data-brand', '') or ''
                 is_match = self._is_brand_match(query.target_brand, title, raw_brand_attr)
 
                 if not is_match and query.target_brand:
                     title_link = item.select_one("h2 a")
                     if title_link and title_link.get("href"):
-                        pdp_href = title_link["href"]
+                        pdp_href = title_link.get("href", "")
                         full_pdp_url = f"{self.marketplace_url}{pdp_href}" if pdp_href.startswith("/") else pdp_href
                         logger.info(f"Checking Organic Rank #{cumulative_organic_count} [ASIN: {extracted_asin}] via Deep PDP...")
                         is_match = self._verify_pdp_brand(full_pdp_url, query.target_brand)
@@ -428,14 +438,14 @@ class AmazonOrganicRanker:
                     )
 
             next_btn = soup.select_one("a.s-pagination-next")
-            if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
+            if not next_btn or "s-pagination-disabled" in (next_btn.get('class', []) or []):
                 break
 
-            # Short sleep between pages to avoid triggering Amazon rate limits
             time.sleep(2)
 
         logger.info(f"No product found for brand '{query.target_brand}' across {self.max_pages} pages.")
         return self._build_empty_result(query)
+
     def _build_empty_result(self, query: TargetQuery) -> RankResult:
         return RankResult(
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
