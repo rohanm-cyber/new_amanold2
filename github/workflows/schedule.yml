@@ -23,7 +23,7 @@ jobs:
 
       - name: Install Google Service Account Credentials
         run: |
-          echo "${{ secrets.GCP_SA_KEY }}" > "google credit.json"
+          echo "${{ secrets.GCP_SA_KEY }}" > "AMAZON_KEYWORD.json"
 
       - name: Install Dependencies
         run: |
