@@ -142,7 +142,7 @@ class AmazonOrganicRanker:
         )
         # Increased script load limits
         self.driver.set_page_load_timeout(45)
-        self.driver.set_script_timeout(45)   def close(self):
+        self.driver.set_script_timeout(45)   
         if self.driver:
             logger.info("Closing Chrome Browser.")
             try:
