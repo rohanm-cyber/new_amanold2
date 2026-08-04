@@ -111,7 +111,7 @@ class AmazonOrganicRanker:
         self.driver: Optional[webdriver.Chrome] = None
 
     def _init_driver(self):
-        """Chrome Driver Driver ko initialize karta hai (Fixed & Optimized)"""
+        """Chrome Driver initialization with aggressive anti-timeout settings"""
         if self.driver:
             return
 
@@ -121,7 +121,7 @@ class AmazonOrganicRanker:
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--window-size=1920,1080')
-        options.add_argument('--blink-settings=imagesEnabled=false')
+        options.add_argument('--blink-settings=imagesEnabled=false')  # Images disabled for speed
         options.add_argument('--lang=en-US,en;q=0.9')
 
         user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
@@ -131,15 +131,18 @@ class AmazonOrganicRanker:
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
 
-        options.page_load_strategy = 'eager'  # Timeout fix karne ke liye
+        # CRITICAL FIX FOR TIMEOUTS:
+        # 'eager' tells Selenium to proceed as soon as HTML is downloaded (DOM Interactive),
+        # without waiting for slow ad scripts/images to finish loading.
+        options.page_load_strategy = 'eager'
 
         self.driver = webdriver.Chrome(
             service=Service(ChromeDriverManager().install()),
             options=options
         )
-        self.driver.set_page_load_timeout(35)
-
-    def close(self):
+        # Increased script load limits
+        self.driver.set_page_load_timeout(45)
+        self.driver.set_script_timeout(45)   def close(self):
         if self.driver:
             logger.info("Closing Chrome Browser.")
             try:
@@ -343,27 +346,45 @@ class AmazonOrganicRanker:
             encoded_keyword = urllib.parse.quote_plus(query.keyword)
             search_url = f"{self.marketplace_url}/s?k={encoded_keyword}" if page_num == 1 else f"{self.marketplace_url}/s?k={encoded_keyword}&page={page_num}"
 
+            # Safely navigate with retry on Timeout
             try:
                 self.driver.get(search_url)
             except TimeoutException:
-                logger.warning(f"Timeout loading search page {page_num}, attempting DOM read anyway...")
+                logger.warning(f"Timeout loading page {page_num}. Attempting to parse loaded DOM anyway...")
+                try:
+                    self.driver.execute_script("window.stop();") # Stop background resource loading
+                except Exception:
+                    pass
 
             if self._check_for_bot_detection():
-                logger.error("Terminating workflow due to CAPTCHA.")
+                logger.error("Terminating workflow due to CAPTCHA/Bot Detection.")
                 return self._build_empty_result(query)
 
-            self.driver.execute_script("window.scrollBy(0, 600);")
-
+            # Scroll down to trigger lazy loading
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result'], div.s-result-item[data-asin]"))
+                self.driver.execute_script("window.scrollBy(0, 800);")
+            except Exception:
+                pass
+
+            # Wait for search results container safely
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    EC.any_of(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.s-result-item[data-asin]")),
+                        EC.presence_of_element_located((By.CSS_SELECTOR, ".s-main-slot"))
+                    )
                 )
             except TimeoutException:
-                logger.warning(f"Timeout waiting for elements on page {page_num}.")
-                break
+                logger.warning(f"Timeout waiting for elements on page {page_num}. Continuing with current page source.")
 
+            # Parse page using BeautifulSoup
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             result_items = soup.select("div[data-component-type='s-search-result']") or soup.select("div.s-result-item[data-asin]")
+
+            if not result_items:
+                logger.warning(f"No result items parsed on page {page_num}. Stopping pagination.")
+                break
 
             page_organic_position = 0
 
@@ -410,9 +431,11 @@ class AmazonOrganicRanker:
             if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
                 break
 
+            # Short sleep between pages to avoid triggering Amazon rate limits
+            time.sleep(2)
+
         logger.info(f"No product found for brand '{query.target_brand}' across {self.max_pages} pages.")
         return self._build_empty_result(query)
-
     def _build_empty_result(self, query: TargetQuery) -> RankResult:
         return RankResult(
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
