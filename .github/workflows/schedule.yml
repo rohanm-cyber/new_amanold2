@@ -28,4 +28,4 @@ jobs:
         env:
           GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          python main.py
+          python amazon_ranking.py
