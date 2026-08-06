@@ -3,7 +3,7 @@ name: Amazon Keyword Rank Scraper
 on:
   schedule:
     # Runs twice daily at 13:00 UTC (1:00 PM) and 23:00 UTC (11:00 PM)
-    - cron: '0 13,23 * * *'
+    - cron: '0 23,13 * * *'
   workflow_dispatch:
 
 jobs:
