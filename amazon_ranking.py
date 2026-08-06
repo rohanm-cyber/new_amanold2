@@ -50,23 +50,20 @@ def get_gspread_client():
     
     if sa_key_env:
         sa_key_str = sa_key_env.strip()
-        
-        # 1. Direct JSON parse
         try:
             creds_dict = json.loads(sa_key_str)
         except json.JSONDecodeError:
-            # 2. Base64 decode
             try:
                 decoded_bytes = base64.b64decode(sa_key_str)
                 creds_dict = json.loads(decoded_bytes.decode("utf-8"))
             except Exception as e:
-                raise ValueError(f"GCP_SA_KEY secret na to valid JSON hai na valid Base64 string. Error: {str(e)}")
+                raise ValueError(f"GCP_SA_KEY is neither valid JSON nor Base64 string. Error: {str(e)}")
                 
         creds = Credentials.from_service_account_info(creds_dict, scopes=SCOPES)
     elif os.path.exists("G_CREDENTIAL.json"):
         creds = Credentials.from_service_account_file("G_CREDENTIAL.json", scopes=SCOPES)
     else:
-        raise FileNotFoundError("GCP_SA_KEY environment variable ya G_CREDENTIAL.json file nahi mili.")
+        raise FileNotFoundError("GCP_SA_KEY environment variable or G_CREDENTIAL.json file not found.")
 
     return gspread.authorize(creds)
 
@@ -101,7 +98,7 @@ class AmazonOrganicRanker:
         self,
         marketplace_url: str = "https://www.amazon.com",
         zip_code: Optional[str] = "12345",
-        max_pages: int = 20,
+        max_pages: int = 10,
         max_retries: int = 3
     ):
         self.marketplace_url = marketplace_url.rstrip('/')
@@ -111,7 +108,7 @@ class AmazonOrganicRanker:
         self.driver: Optional[webdriver.Chrome] = None
 
     def _init_driver(self):
-        """Chrome Driver initialization with fallback mechanism"""
+        """Chrome Driver initialization with anti-bot evasion settings."""
         if self.driver is not None:
             return
 
@@ -124,7 +121,7 @@ class AmazonOrganicRanker:
         options.add_argument('--blink-settings=imagesEnabled=false')
         options.add_argument('--lang=en-US,en;q=0.9')
 
-        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
         options.add_argument(f'user-agent={user_agent}')
 
         options.add_argument("--disable-blink-features=AutomationControlled")
@@ -136,10 +133,21 @@ class AmazonOrganicRanker:
             service = Service(ChromeDriverManager().install())
             self.driver = webdriver.Chrome(service=service, options=options)
         except Exception as e:
-            logger.warning(f"ChromeDriverManager failed: {e}. Trying default system driver...")
+            logger.warning(f"ChromeDriverManager failed: {e}. Falling back to default Chrome driver...")
             self.driver = webdriver.Chrome(options=options)
 
         if self.driver:
+            # Mask navigator.webdriver via CDP command
+            self.driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument",
+                {
+                    "source": """
+                        Object.defineProperty(navigator, 'webdriver', {
+                            get: () => undefined
+                        })
+                    """
+                }
+            )
             self.driver.set_page_load_timeout(45)
             self.driver.set_script_timeout(45)
         else:
@@ -164,11 +172,12 @@ class AmazonOrganicRanker:
             captcha_indicators = [
                 "robot check",
                 "enter the characters you see below",
-                "sorry, we just need to make sure you're not a robot"
+                "sorry, we just need to make sure you're not a robot",
+                "api-services-support@amazon.com"
             ]
 
             if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
-                logger.warning("[!] CAPTCHA Detected on Amazon!")
+                logger.warning("[!] CAPTCHA / Bot Check Detected on Amazon!")
                 return True
         except Exception as e:
             logger.error(f"Error checking bot detection: {e}")
@@ -188,21 +197,19 @@ class AmazonOrganicRanker:
                 time.sleep(2)
 
                 if self._check_for_bot_detection():
-                    time.sleep(5)
+                    time.sleep(3)
                     continue
 
-                location_btn = WebDriverWait(self.driver, 15).until(
+                location_btn = WebDriverWait(self.driver, 10).until(
                     EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
                 )
                 location_btn.click()
 
-                zip_input = WebDriverWait(self.driver, 15).until(
+                zip_input = WebDriverWait(self.driver, 10).until(
                     EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
                 )
                 zip_input.clear()
                 zip_input.send_keys(self.zip_code)
-                time.sleep(1)
-
                 zip_input.send_keys(Keys.ENTER)
                 time.sleep(2)
 
@@ -219,7 +226,7 @@ class AmazonOrganicRanker:
                     except Exception:
                         pass
 
-                time.sleep(3)
+                time.sleep(2)
 
                 continue_selectors = [
                     "input[aria-labelledby*='GLUXConfirmClose']",
@@ -229,7 +236,7 @@ class AmazonOrganicRanker:
                 ]
                 for selector in continue_selectors:
                     try:
-                        continue_btn = WebDriverWait(self.driver, 3).until(
+                        continue_btn = WebDriverWait(self.driver, 2).until(
                             EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
                         )
                         self.driver.execute_script("arguments[0].click();", continue_btn)
@@ -237,21 +244,16 @@ class AmazonOrganicRanker:
                     except Exception:
                         pass
 
-                try:
-                    self.driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                except Exception:
-                    pass
-
-                time.sleep(3)
+                time.sleep(2)
                 self.driver.refresh()
-                time.sleep(3)
-                logger.info(f"ZIP Code updated to '{self.zip_code}'.")
+                time.sleep(2)
+                logger.info("ZIP Code modal interaction complete.")
                 return True
 
             except Exception as e:
-                logger.error(f"ZIP Update Error: {str(e)}")
+                logger.warning(f"ZIP Update attempt {attempt} failed non-fatally: {str(e)}")
 
-        return True
+        return False
 
     @staticmethod
     def _normalize_brand_string(brand: str) -> str:
@@ -262,66 +264,29 @@ class AmazonOrganicRanker:
         return normalized.strip()
 
     def _is_brand_match(self, target_brand: str, raw_title: str, raw_brand_attr: Optional[str] = None) -> bool:
-        if not target_brand or not raw_title:
+        # Match top organic listing automatically if no target brand is specified in Google Sheet
+        if not target_brand:
+            return True
+
+        if not raw_title:
             return False
 
         norm_target = self._normalize_brand_string(target_brand)
         
+        # Check explicit data-brand attributes
         if raw_brand_attr:
             norm_brand_attr = self._normalize_brand_string(raw_brand_attr)
             if norm_target in norm_brand_attr or norm_brand_attr in norm_target:
                 return True
 
+        # Fallback substring title matching
         clean_title = raw_title.lower()
         target_words = norm_target.split()
         
-        if all(re.search(rf"\b{re.escape(word)}\b", clean_title) for word in target_words):
+        if target_words and all(re.search(rf"\b{re.escape(word)}\b", clean_title) for word in target_words):
             return True
 
         return False
-
-    def _verify_pdp_brand(self, pdp_url: str, target_brand: str) -> bool:
-        if not target_brand or not self.driver:
-            return False
-
-        current_window = self.driver.current_window_handle
-        try:
-            self.driver.execute_script("window.open(arguments[0], '_blank');", pdp_url)
-            time.sleep(1.5)
-            self.driver.switch_to.window(self.driver.window_handles[-1])
-
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-            brand_sources = []
-
-            byline = soup.select_one("#bylineInfo")
-            if byline:
-                brand_sources.append(byline.get_text(strip=True))
-
-            overview_rows = soup.select("#productOverview_feature_div tr")
-            for row in overview_rows:
-                if "brand" in row.get_text().lower():
-                    brand_sources.append(row.get_text(strip=True))
-
-            meta_brand = soup.select_one("meta[name='title']")
-            if meta_brand and meta_brand.get("content"):
-                brand_sources.append(meta_brand.get("content", ""))
-
-            combined_pdp_text = " ".join(brand_sources)
-            norm_target = self._normalize_brand_string(target_brand)
-            norm_pdp_text = self._normalize_brand_string(combined_pdp_text)
-
-            return norm_target in norm_pdp_text
-
-        except Exception as e:
-            logger.error(f"Error checking PDP brand match: {str(e)}")
-            return False
-        finally:
-            try:
-                if self.driver and len(self.driver.window_handles) > 1:
-                    self.driver.close()
-                    self.driver.switch_to.window(current_window)
-            except Exception:
-                pass
 
     @staticmethod
     def _is_non_organic_placement(element) -> bool:
@@ -362,7 +327,7 @@ class AmazonOrganicRanker:
                 if self.driver:
                     self.driver.get(search_url)
             except TimeoutException:
-                logger.warning(f"Timeout loading search page {page_num}, attempting DOM read anyway...")
+                logger.warning(f"Timeout loading page {page_num}, executing window.stop()...")
                 try:
                     if self.driver:
                         self.driver.execute_script("window.stop();")
@@ -370,28 +335,26 @@ class AmazonOrganicRanker:
                     pass
 
             if self._check_for_bot_detection():
-                logger.error("Terminating workflow due to CAPTCHA.")
+                logger.error("CAPTCHA encountered. Returning NOT_FOUND result.")
                 return self._build_empty_result(query)
 
+            # Incremental scrolling forces lazy-loaded items (e.g. broad terms like 'pillow') into the DOM
             try:
                 if self.driver:
-                    self.driver.execute_script("window.scrollBy(0, 800);")
+                    for scroll_step in range(1, 5):
+                        self.driver.execute_script(f"window.scrollTo(0, {scroll_step * 1000});")
+                        time.sleep(0.4)
             except Exception:
                 pass
 
-            try:
-                if self.driver:
-                    WebDriverWait(self.driver, 12).until(
-                        EC.any_of(
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']")),
-                            EC.presence_of_element_located((By.CSS_SELECTOR, "div.s-result-item[data-asin]"))
-                        )
-                    )
-            except TimeoutException:
-                logger.warning(f"Timeout waiting for elements on page {page_num}.")
-
             soup = BeautifulSoup(self.driver.page_source if self.driver else "", 'html.parser')
-            result_items = soup.select("div[data-component-type='s-search-result']") or soup.select("div.s-result-item[data-asin]")
+            
+            # Broadened element selector list to prevent missing widget grid items
+            result_items = soup.select(
+                "div[data-component-type='s-search-result'], "
+                "div[data-asin]:not([data-asin='']), "
+                "div.s-result-item[data-asin]"
+            )
 
             page_organic_position = 0
 
@@ -401,26 +364,19 @@ class AmazonOrganicRanker:
 
                 extracted_asin = (item.get('data-asin', '') or '').strip()
 
-                if not extracted_asin or extracted_asin in seen_asins or self._is_non_organic_placement(item):
+                # Filter invalid ASIN lengths, ads, and duplicate listings
+                if not extracted_asin or len(extracted_asin) != 10 or extracted_asin in seen_asins or self._is_non_organic_placement(item):
                     continue
 
                 seen_asins.add(extracted_asin)
                 page_organic_position += 1
                 cumulative_organic_count += 1
 
-                title_el = item.select_one("h2 a span") or item.select_one("h2 a") or item.select_one(".a-size-base-plus.a-color-base")
+                title_el = item.select_one("h2 a span") or item.select_one("h2 a") or item.select_one(".a-size-base-plus")
                 title = title_el.get_text(strip=True) if title_el else "N/A"
 
                 raw_brand_attr = item.get('data-brand', '') or ''
                 is_match = self._is_brand_match(query.target_brand, title, raw_brand_attr)
-
-                if not is_match and query.target_brand:
-                    title_link = item.select_one("h2 a")
-                    if title_link and title_link.get("href"):
-                        pdp_href = title_link.get("href", "")
-                        full_pdp_url = f"{self.marketplace_url}{pdp_href}" if pdp_href.startswith("/") else pdp_href
-                        logger.info(f"Checking Organic Rank #{cumulative_organic_count} [ASIN: {extracted_asin}] via Deep PDP...")
-                        is_match = self._verify_pdp_brand(full_pdp_url, query.target_brand)
 
                 if is_match:
                     logger.info(f"MATCH CONFIRMED! Brand '{query.target_brand}' found at Rank #{cumulative_organic_count} [ASIN: {extracted_asin}]")
@@ -429,7 +385,7 @@ class AmazonOrganicRanker:
                         timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
                         keyword=query.keyword,
                         zip_code=self.zip_code or "N/A",
-                        brand_name=query.target_brand,
+                        brand_name=query.target_brand or "N/A",
                         asin=extracted_asin,
                         product_title=title,
                         page_number=page_num,
@@ -451,7 +407,7 @@ class AmazonOrganicRanker:
             timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
             keyword=query.keyword,
             zip_code=self.zip_code or "N/A",
-            brand_name=query.target_brand,
+            brand_name=query.target_brand or "N/A",
             asin="NOT_FOUND",
             product_title="N/A",
             page_number=-1,
@@ -461,15 +417,14 @@ class AmazonOrganicRanker:
 
 
 # ==========================================
-# REAL-TIME LIVE GOOGLE SHEETS INTEGRATION
+# BATCH GOOGLE SHEETS INTEGRATION
 # ==========================================
 def fetch_keywords_and_sync_results(
     spreadsheet_name: str,
     input_sheet_name: str,
     output_sheet_name: str,
     ranker: AmazonOrganicRanker,
-    batch_size: int = 100,
-    batch_delay_seconds: float = 60.0
+    batch_size: int = 10
 ):
     client = get_gspread_client()
     sheet = client.open(spreadsheet_name)
@@ -486,7 +441,7 @@ def fetch_keywords_and_sync_results(
     for row in records:
         kw = str(row.get("Keyword", "") or row.get("keyword", "")).strip()
         brand = str(row.get("Brand", "") or row.get("brand", "") or row.get("Brand Name", "")).strip()
-        if kw and brand:
+        if kw:
             targets.append(TargetQuery(keyword=kw, target_brand=brand))
 
     if not targets:
@@ -508,11 +463,12 @@ def fetch_keywords_and_sync_results(
     ranker.update_and_verify_zip()
 
     total_keywords = len(targets)
+    rows_buffer = []
 
     for idx, target in enumerate(targets, 1):
         res = ranker.search_and_rank(target)
 
-        output_worksheet.append_row([
+        rows_buffer.append([
             res.timestamp,
             res.keyword,
             res.asin,
@@ -520,23 +476,24 @@ def fetch_keywords_and_sync_results(
             res.global_organic_rank
         ])
 
-        print(f"[{idx}/{total_keywords}] Live Saved -> Keyword: '{target.keyword}' | ASIN: {res.asin} | Rank: {res.global_organic_rank}")
+        print(f"[{idx}/{total_keywords}] Scraped -> Keyword: '{target.keyword}' | ASIN: {res.asin} | Rank: {res.global_organic_rank}")
+
+        # Batch append rows to respect Google Sheets API rate limits
+        if len(rows_buffer) >= batch_size or idx == total_keywords:
+            output_worksheet.append_rows(rows_buffer)
+            rows_buffer.clear()
+            logger.info("Batch uploaded to Google Sheets.")
 
         del res
         gc.collect()
-
-        if idx % batch_size == 0 and idx < total_keywords:
-            print(f"\n--- Batch pause: Processed {idx}/{total_keywords} keywords. Pausing for {int(batch_delay_seconds)} seconds... ---\n")
-            time.sleep(batch_delay_seconds)
-        else:
-            time.sleep(3)
+        time.sleep(2)
 
     ranker.close()
-    logger.info("All processing complete! All rows saved live.")
+    logger.info("Scraping and Google Sheets sync completed!")
 
 
 # ==========================================
-# RUNNER / ENTRY POINT
+# ENTRY POINT
 # ==========================================
 if __name__ == "__main__":
     SPREADSHEET_NAME = "Keywords_Research"
@@ -544,7 +501,7 @@ if __name__ == "__main__":
     OUTPUT_SHEET_NAME = "Keywords_output"
 
     ZIP_CODE = "12345"
-    MAX_PAGE_LIMIT = 10
+    MAX_PAGE_LIMIT = 5
 
     ranker = AmazonOrganicRanker(
         marketplace_url="https://www.amazon.com",
@@ -557,6 +514,5 @@ if __name__ == "__main__":
         input_sheet_name=INPUT_SHEET_NAME,
         output_sheet_name=OUTPUT_SHEET_NAME,
         ranker=ranker,
-        batch_size=100,
-        batch_delay_seconds=60.0
+        batch_size=10
     )
