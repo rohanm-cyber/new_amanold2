@@ -19,11 +19,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install System Dependencies for Headless Chrome
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget curl unzip libxi6 libgconf-2-4 libnss3 fonts-liberation libappindicator3-1 libasound2
-
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
