@@ -1,4 +1,3 @@
-import base64
 import gc
 import logging
 import os
@@ -34,14 +33,18 @@ MIN_KEYWORD_DELAY: float = 2.0
 MAX_KEYWORD_DELAY: float = 5.0
 DEBUG_MODE: bool = True
 
+# Optional: Add proxies in format "http://user:pass@ip:port" or "http://ip:port".
+# If empty, the system runs with a standard single/multi browser session setup.
 PROXY_LIST: List[str] = []
 
+# Status Definitions
 STATUS_FOUND: str = "FOUND"
 STATUS_NOT_FOUND: str = "NOT_FOUND"
 STATUS_RETRY_REQUIRED: str = "RETRY_REQUIRED"
 STATUS_BLOCKED: str = "BLOCKED"
 STATUS_ERROR: str = "ERROR"
 
+# Setup Logger
 logging.basicConfig(
     level=logging.DEBUG if DEBUG_MODE else logging.INFO,
     format="%(asctime)s [%(levelname)s] [%(name)s] %(message)s",
@@ -137,11 +140,13 @@ class BrowserSession:
                 self.is_healthy = False
                 return False
 
+            # Click location selector
             loc_btn = WebDriverWait(self.driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
             )
             loc_btn.click()
 
+            # Enter ZIP
             zip_input = WebDriverWait(self.driver, 10).until(
                 EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
             )
@@ -150,6 +155,7 @@ class BrowserSession:
             zip_input.send_keys(Keys.ENTER)
             time.sleep(1.5)
 
+            # Click Submit/Apply if present
             for sel in ["#GLUXZipUpdate input[type='submit']", "#GLUXZipUpdate-announce"]:
                 try:
                     btn = self.driver.find_element(By.CSS_SELECTOR, sel)
@@ -160,6 +166,7 @@ class BrowserSession:
 
             time.sleep(2)
 
+            # Confirm dialog
             for sel in ["input[aria-labelledby*='GLUXConfirmClose']", "#GLUXConfirmClose", "button[name='glowDoneButton']"]:
                 try:
                     c_btn = WebDriverWait(self.driver, 3).until(
@@ -174,6 +181,7 @@ class BrowserSession:
             self.driver.refresh()
             time.sleep(2)
 
+            # Strict Verification: Verify ZIP string exists in location container
             page_src = self.driver.page_source
             loc_widget_src = ""
             try:
@@ -277,6 +285,7 @@ def is_valid_search_page(soup: BeautifulSoup) -> bool:
     if detect_captcha(str(soup)):
         return False
     
+    # Check for search results container or result cards
     has_results = soup.select("div[data-component-type='s-search-result']")
     has_no_results_banner = soup.select_one("div.s-no-outline") or "did not match any products" in soup.get_text().lower()
     
@@ -309,16 +318,19 @@ def extract_product_title(card: Tag) -> str:
 
 def extract_product_brand(card: Tag) -> str:
     """Extracts product brand name using table overview, attributes, or bylines."""
+    # 1. Check overview table row (tr.po-brand)
     po_brand_row = card.select_one("tr.po-brand")
     if po_brand_row:
         val_span = po_brand_row.select_one("td.a-span9 span, span.po-break-word")
         if val_span and val_span.get_text(strip=True):
             return val_span.get_text(strip=True)
 
+    # 2. Card data attribute
     data_brand = card.get('data-brand', '').strip()
     if data_brand:
         return data_brand
 
+    # 3. Byline store text
     byline = card.select_one("#bylineInfo, .a-row.a-size-base.a-color-secondary .a-size-base")
     if byline and byline.get_text(strip=True):
         raw = byline.get_text(strip=True)
@@ -403,7 +415,7 @@ def process_keyword_attempt(
 ) -> Tuple[str, List[RankResult], str]:
     """
     Executes a single keyword search pass.
-    Returns ONLY the top (first) organic rank found for the target brand.
+    Returns: (STATUS, List[RankResult], ErrorReason)
     """
     logger.info(f"[{session.session_id}] [ATTEMPT {attempt_num}/{MAX_KEYWORD_RETRIES}] "
                 f"Processing Keyword: '{target.keyword}' | Brand: '{target.target_brand}'")
@@ -425,6 +437,7 @@ def process_keyword_attempt(
             session.is_healthy = False
             return STATUS_RETRY_REQUIRED, [], f"Page load failure: {str(e)}"
 
+        # Smooth scroll to trigger lazy rendering
         for step in range(1, 5):
             session.driver.execute_script(f"window.scrollTo(0, document.body.scrollHeight * {step / 4});")
             time.sleep(0.3)
@@ -432,27 +445,35 @@ def process_keyword_attempt(
         page_src = session.driver.page_source
         soup = BeautifulSoup(page_src, 'html.parser')
 
+        # Check for CAPTCHA
         if detect_captcha(page_src):
             logger.warning(f"[{session.session_id}] CAPTCHA encountered on Page {page_num}.")
             session.is_healthy = False
             return STATUS_BLOCKED, [], "Amazon CAPTCHA Intercepted"
 
+        # Check for search page validity
         if not is_valid_search_page(soup):
             logger.warning(f"[{session.session_id}] Invalid search page DOM rendered on Page {page_num}.")
             session.is_healthy = False
             return STATUS_RETRY_REQUIRED, [], "Invalid SERP DOM Structure"
 
+        # Parse robust product cards only
         raw_cards = soup.select("div[data-component-type='s-search-result']")
         
         position_on_page = 0
         for card in raw_cards:
+            position_on_page += 1
             asin = extract_asin(card)
             title = extract_product_title(card)
 
+            # Skip non-product modules or cards without ASIN
             if is_non_product_element(card) or not asin:
                 continue
 
+            # Deduplicate ASINs
             if asin in seen_asins:
+                if DEBUG_MODE:
+                    logger.debug(f"P{page_num} | Pos {position_on_page:02d} | ASIN: {asin} | DUPLICATE -> SKIPPED")
                 continue
 
             seen_asins.add(asin)
@@ -461,7 +482,6 @@ def process_keyword_attempt(
             current_organic_rank = None
             
             if not is_sponsored:
-                position_on_page += 1
                 global_organic_counter += 1
                 current_organic_rank = global_organic_counter
 
@@ -475,7 +495,7 @@ def process_keyword_attempt(
                 print(f"DEBUG: [{session.session_id}] P{page_num:02d} | Pos {position_on_page:02d} | ASIN: {asin} | "
                       f"Brand: '{extracted_brand}' | Sponsored: {sp_str} | OrganicRank: {rnk_str} | Match: {mtc_str}")
 
-            # Top organic match found: save and exit immediately
+            # Store match if Organic + Requested Brand Match
             if not is_sponsored and brand_matched:
                 diff_str = None
                 if target.manual_rank is not None and current_organic_rank is not None:
@@ -498,10 +518,8 @@ def process_keyword_attempt(
                     rank_difference=diff_str
                 )
                 matched_results.append(res)
-                session.keywords_processed += 1
-                logger.info(f"[{session.session_id}] Top match found for '{target.keyword}': ASIN {asin} at Page {page_num}, Pos #{position_on_page} (Organic Rank #{current_organic_rank}). Stopping search.")
-                return STATUS_FOUND, matched_results, ""
 
+        # Pagination handling
         next_url = get_next_page_url(soup)
         if next_url:
             current_url = next_url
@@ -513,15 +531,17 @@ def process_keyword_attempt(
 
     session.keywords_processed += 1
 
+    # Evaluation
     if matched_results:
         return STATUS_FOUND, matched_results, ""
     else:
+        # Genuinely scanned valid pages without finding target brand
         return STATUS_NOT_FOUND, [
             RankResult(
                 timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 keyword=target.keyword,
                 target_brand=target.target_brand,
-                asin="NOT_FOUND",
+                asin="N/A",
                 product_title="N/A",
                 page_number=0,
                 position_on_page=0,
@@ -535,7 +555,10 @@ def process_keyword_attempt(
 
 
 def process_keyword(target: TargetQuery, session_pool: SessionPool) -> List[RankResult]:
-    """Coordinates keyword execution across retries and session switching."""
+    """
+    Coordinates keyword execution across retries and session switching.
+    Guarantees temporary Amazon failures NEVER output as NOT_FOUND.
+    """
     last_status = STATUS_ERROR
     last_reason = "Unknown Error"
     
@@ -553,15 +576,18 @@ def process_keyword(target: TargetQuery, session_pool: SessionPool) -> List[Rank
         
         last_status = status
         last_reason = reason
+        
+        # Backoff delay before retry
         time.sleep(3.0)
 
+    # If all retries exhausted, return non-NOT_FOUND error status
     logger.error(f"[EXHAUSTED] All retries failed for keyword '{target.keyword}'. Status: {last_status}")
     return [
         RankResult(
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             keyword=target.keyword,
             target_brand=target.target_brand,
-            asin="ERROR",
+            asin="N/A",
             product_title="N/A",
             page_number=0,
             position_on_page=0,
@@ -579,7 +605,7 @@ def process_keyword(target: TargetQuery, session_pool: SessionPool) -> List[Rank
 # GOOGLE SHEETS PIPELINE
 # ==========================================
 def run_pipeline(
-    json_path: str = "CREDENTIAL.json",
+    json_path: str = "gen-lang-client-0598815756-6dffccb5fb8e.json",
     spreadsheet_name: str = "Keywords_Research",
     input_sheet_name: str = "Keywords_input",
     output_sheet_name: str = "Keywords_output"
@@ -613,15 +639,16 @@ def run_pipeline(
 
     logger.info(f"Loaded {len(targets)} keyword targets for execution.")
 
+    # Prepare Output Sheet
     try:
         out_ws = sheet.worksheet(output_sheet_name)
     except gspread.WorksheetNotFound:
-        out_ws = sheet.add_worksheet(title=output_sheet_name, rows="500", cols="6")
+        out_ws = sheet.add_worksheet(title=output_sheet_name, rows="500", cols="14")
 
     out_ws.clear()
+    headers = [
+        "Timestamp", "Keyword", "ASIN","Page Number", "Position on Page"]
     
-    # OUTPUT HEADERS: 6 Columns
-    headers = ["Timestamp", "Keyword", "ASIN", "Page Number", "Page Position", "Organic Rank"]
     out_ws.append_row(headers)
 
     session_pool = SessionPool(proxies=PROXY_LIST)
@@ -635,12 +662,20 @@ def run_pipeline(
                 out_ws.append_row([
                     res.timestamp,
                     res.keyword,
+                    res.target_brand,
                     res.asin,
-                    res.page_number if res.page_number > 0 else "N/A",
-                    res.position_on_page if res.position_on_page > 0 else "N/A",
-                    res.global_organic_rank if res.global_organic_rank is not None else "N/A"
+                    res.product_title,
+                    res.page_number if res.page_number > 0 else "",
+                    res.position_on_page if res.position_on_page > 0 else "",
+                    res.global_organic_rank if res.global_organic_rank else "",
+                    res.status,
+                    res.attempt,
+                    res.session_id,
+                    res.error_reason,
+                    res.manual_rank if res.manual_rank else "",
+                    res.rank_difference if res.rank_difference else ""
                 ])
-                logger.info(f"WRITTEN TO SHEET -> Keyword: {res.keyword} | ASIN: {res.asin} | Page: {res.page_number} | Pos: {res.position_on_page} | OrganicRank: {res.global_organic_rank}")
+                logger.info(f"WRITTEN TO SHEET -> ASIN: {res.asin} | OrganicRank: {res.global_organic_rank} | Status: {res.status}")
             
             gc.collect()
             time.sleep(random.uniform(MIN_KEYWORD_DELAY, MAX_KEYWORD_DELAY))
