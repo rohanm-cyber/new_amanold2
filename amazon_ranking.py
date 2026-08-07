@@ -373,6 +373,8 @@ def is_non_product_element(card: Tag) -> bool:
 
 def normalize_brand(b_str: str) -> str:
     """Normalizes brand string for comparison."""
+    s = re.sub(r'[^a-z0-9]', '', s) # Saare spaces aur special chars hatana
+    return s.strip()
     if not b_str:
         return ""
     s = b_str.lower()
