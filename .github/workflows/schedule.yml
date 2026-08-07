@@ -1,31 +1,43 @@
-name: Amazon Keyword Rank Scraper
+name: Run Amazon Organic Ranker
 
 on:
-  schedule:
-    # Runs twice daily at 13:00 UTC (1:00 PM) and 23:00 UTC (11:00 PM)
-    - cron: '0 23,13 * * *'
   workflow_dispatch:
+  schedule:
+    - cron: '0 13,23 * * *' # Optional: Har din run karne ke liye
 
 jobs:
-  scrape-and-sync:
+  run-scraper:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install Python Dependencies
+      - name: Install Chrome
         run: |
-          python -m pip install --upgrade pip
-          pip install selenium webdriver-manager beautifulsoup4 gspread google-auth
+          sudo apt-get update
+          sudo apt-get install -y google-chrome-stable
 
-      - name: Run Amazon Ranker Script
-        env:
-          GCP_SA_KEY: ${{ secrets.G_CREDENTIAL }}
+      - name: Install Dependencies
         run: |
-          python amazon_ranking.py
+          pip install selenium beautifulsoup4 gspread google-auth
+
+      # SECRET SE TEMPORARY JSON FILE BANANA
+      - name: Create GCP Credentials File
+        run: |
+          echo "${{ secrets.GCP_SA_KEY }}" > gcp_key.json
+
+      # PYTHON SCRIPT RUN KARNA
+      - name: Run Ranker Script
+        run: |
+          python amazon_organic_ranker_v4.py
+
+      # RUN HONE KE BAAD FILE DELETE KARNA (SECURITY)
+      - name: Cleanup Credentials
+        if: always()
+        run: |
+          rm -f gcp_key.json
