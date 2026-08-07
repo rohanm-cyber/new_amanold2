@@ -34,7 +34,7 @@ jobs:
       # PYTHON SCRIPT RUN KARNA
       - name: Run Ranker Script
         run: |
-          python amazon_organic_ranker_v4.py
+          python amazon_organic_ranker.py
 
       # RUN HONE KE BAAD FILE DELETE KARNA (SECURITY)
       - name: Cleanup Credentials
