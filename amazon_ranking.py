@@ -1,4 +1,4 @@
-import base
+import base64
 import gc
 import logging
 import os
