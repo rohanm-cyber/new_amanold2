@@ -42,4 +42,4 @@ jobs:
       - name: Cleanup Credentials
         if: always()
         run: |
-          rm -f credentials.json
+          rm -f gcp_key.json
