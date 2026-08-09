@@ -607,7 +607,7 @@ def process_keyword(target: TargetQuery, session_pool: SessionPool) -> List[Rank
 # GOOGLE SHEETS PIPELINE
 # ==========================================
 def run_pipeline(
-    json_path: str = "GCP_SA_KEY.json",
+    json_path: str = "gcp_key.json",
     spreadsheet_name: str = "Keywords_Research",
     input_sheet_name: str = "Keywords_input",
     output_sheet_name: str = "Keywords_output"
