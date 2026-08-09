@@ -86,7 +86,7 @@ class AmazonOrganicRanker:
         options.add_argument("--lang=en-US,en;q=0.9")
 
         # Driver initialization using undetected-chromedriver
-        self.driver = uc.Chrome(options=options, version_main=None)
+        self.driver = uc.Chrome(options=options, version_main=150)
         logger.info("Undetected Chrome Browser successfully initialized.")
 
     def close(self):
