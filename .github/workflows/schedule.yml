@@ -26,10 +26,12 @@ jobs:
         run: |
           pip install selenium beautifulsoup4 gspread google-auth
 
-      # SECRET SE TEMPORARY JSON FILE BANANA
+      # SECRET SE TEMPORARY JSON FILE BANANA (FIXED FOR JSON ERROR)
       - name: Create GCP Credentials File
         run: |
-          echo "${{ secrets.GCP_SA_KEY }}" > gcp_key.json
+          cat << 'EOF' > credentials.json
+          ${{ secrets.GCP_SA_KEY }}
+          EOF
 
       # PYTHON SCRIPT RUN KARNA
       - name: Run Ranker Script
@@ -40,4 +42,4 @@ jobs:
       - name: Cleanup Credentials
         if: always()
         run: |
-          rm -f gcp_key.json
+          rm -f credentials.json
