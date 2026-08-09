@@ -24,7 +24,8 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install selenium beautifulsoup4 gspread google-auth
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
       # SECRET SE TEMPORARY JSON FILE BANANA
       - name: Create GCP Credentials File
