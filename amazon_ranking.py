@@ -15,9 +15,9 @@ from google.oauth2.service_account import Credentials
 from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from selenium import webdriver
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium.webdriver.chrome.options import Options
+
+# Undetected Chromedriver import for Anti-Bot Bypass
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
@@ -37,9 +37,6 @@ logging.basicConfig(
 logger = logging.getLogger("AmazonRanker")
 
 
-# ==========================================
-# DATA MODELS
-# ==========================================
 @dataclass
 class TargetQuery:
     keyword: str
@@ -62,17 +59,7 @@ class RankResult:
     total_listings_scanned: int
 
 
-# ==========================================
-# SCRAPER CORE CLASS
-# ==========================================
 class AmazonOrganicRanker:
-    USER_AGENTS = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:127.0) Gecko/20100101 Firefox/127.0",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-    ]
-
     def __init__(
         self,
         marketplace_url: str = "https://www.amazon.com",
@@ -84,41 +71,23 @@ class AmazonOrganicRanker:
         self.zip_code = zip_code
         self.max_pages = max_pages
         self.max_retries = max_retries
-        self.driver: Optional[webdriver.Chrome] = None
+        self.driver: Optional[uc.Chrome] = None
 
     def _init_driver(self):
         if self.driver:
             self.close()
 
-        options = Options()
+        options = uc.ChromeOptions()
+        # Headless bypass mode for undetected_chromedriver
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1920,1080")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument("--lang=en-US,en;q=0.9")
-        
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
-        
-        selected_ua = random.choice(self.USER_AGENTS)
-        options.add_argument(f"user-agent={selected_ua}")
 
-        self.driver = webdriver.Chrome(options=options)
-        
-        self.driver.execute_cdp_cmd(
-            "Page.addScriptToEvaluateOnNewDocument",
-            {
-                "source": """
-                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-                    window.navigator.chrome = { runtime: {} };
-                    Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-                    Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-                """
-            }
-        )
-        logger.info("Headless Chrome Browser successfully initialized.")
+        # Driver initialization using undetected-chromedriver
+        self.driver = uc.Chrome(options=options, version_main=None)
+        logger.info("Undetected Chrome Browser successfully initialized.")
 
     def close(self):
         if self.driver:
@@ -139,8 +108,7 @@ class AmazonOrganicRanker:
         captcha_indicators = [
             "robot check",
             "enter the characters you see below",
-            "sorry, we just need to make sure you're not a robot",
-            "api-services-support@amazon.com"
+            "sorry, we just need to make sure you're not a robot"
         ]
 
         if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
@@ -156,39 +124,46 @@ class AmazonOrganicRanker:
             logger.info(f"Setting ZIP Code to '{self.zip_code}' (Attempt {attempt}/{self.max_retries})...")
             try:
                 self.driver.get(self.marketplace_url)
-                time.sleep(random.uniform(2.5, 4.0))
+                time.sleep(random.uniform(3.0, 5.0))
 
                 if self._check_for_bot_detection():
                     time.sleep(random.uniform(5.0, 8.0))
                     continue
 
-                location_btn = WebDriverWait(self.driver, 10).until(
-                    EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
-                )
-                location_btn.click()
-                time.sleep(random.uniform(1.0, 2.0))
+                # Safely try setting ZIP code without breaking scraper if modal fails
+                try:
+                    location_btn = WebDriverWait(self.driver, 7).until(
+                        EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
+                    )
+                    location_btn.click()
+                    time.sleep(random.uniform(1.5, 2.5))
 
-                zip_input = WebDriverWait(self.driver, 10).until(
-                    EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
-                )
-                zip_input.clear()
-                
-                for char in str(self.zip_code):
-                    zip_input.send_keys(char)
-                    time.sleep(random.uniform(0.05, 0.15))
+                    zip_input = WebDriverWait(self.driver, 7).until(
+                        EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
+                    )
+                    zip_input.clear()
                     
-                time.sleep(random.uniform(0.5, 1.2))
-                zip_input.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(1.5, 2.5))
+                    for char in str(self.zip_code):
+                        zip_input.send_keys(char)
+                        time.sleep(random.uniform(0.08, 0.18))
+                        
+                    time.sleep(random.uniform(0.8, 1.5))
+                    zip_input.send_keys(Keys.ENTER)
+                    time.sleep(random.uniform(2.0, 3.0))
 
-                apply_btn = self.driver.find_element(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
-                self.driver.execute_script("arguments[0].click();", apply_btn)
-                time.sleep(random.uniform(2.0, 3.5))
+                    apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
+                    if apply_btn:
+                        self.driver.execute_script("arguments[0].click();", apply_btn[0])
+                        time.sleep(random.uniform(2.0, 3.5))
 
-                self.driver.refresh()
-                time.sleep(random.uniform(2.0, 3.0))
-                logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
-                return True
+                    self.driver.refresh()
+                    time.sleep(random.uniform(2.5, 4.0))
+                    logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
+                    return True
+
+                except Exception as zip_e:
+                    logger.warning(f"ZIP modal interaction skipped: {str(zip_e)}. Continuing search directly...")
+                    return True
 
             except Exception as e:
                 logger.warning(f"ZIP Update Attempt {attempt} Failed: {str(e)}")
@@ -197,9 +172,9 @@ class AmazonOrganicRanker:
 
     def _scroll_entire_page(self):
         for _ in range(4):
-            scroll_by = random.randint(600, 900)
+            scroll_by = random.randint(500, 800)
             self.driver.execute_script(f"window.scrollBy(0, {scroll_by});")
-            time.sleep(random.uniform(0.4, 0.8))
+            time.sleep(random.uniform(0.5, 0.9))
 
     @staticmethod
     def _is_non_organic_placement(element) -> bool:
@@ -222,12 +197,10 @@ class AmazonOrganicRanker:
         if not target_clean:
             return False
 
-        # 1. Title match
         title_clean = re.sub(r'[^a-z0-9]', '', raw_title.lower())
         if target_clean in title_clean:
             return True
 
-        # 2. Amazon specific brand/store tags
         brand_selectors = [
             ".s-line-clamp-1", 
             ".a-size-base-plus", 
@@ -241,12 +214,10 @@ class AmazonOrganicRanker:
                 if target_clean in elem_text:
                     return True
 
-        # 3. Attributes check
         raw_brand_attr = re.sub(r'[^a-z0-9]', '', item_soup.get('data-brand', '').lower())
         if target_clean in raw_brand_attr:
             return True
 
-        # 4. Fallback search inside entire product card HTML
         item_text_clean = re.sub(r'[^a-z0-9]', '', item_soup.get_text().lower())
         if target_clean in item_text_clean:
             return True
@@ -270,27 +241,21 @@ class AmazonOrganicRanker:
 
             try:
                 self.driver.get(search_url)
-            except WebDriverException as e:
-                logger.error(f"Page navigation error: {str(e)}. Re-initializing driver...")
+            except Exception as e:
+                logger.error(f"Navigation error: {str(e)}. Re-initializing driver...")
                 self._init_driver()
                 self.update_and_verify_zip()
                 self.driver.get(search_url)
 
-            time.sleep(random.uniform(2.5, 4.0))
+            time.sleep(random.uniform(3.0, 5.0))
 
             if self._check_for_bot_detection():
+                logger.warning("Bot block detected during keyword search. Restarting driver session...")
                 self._init_driver()
                 self.update_and_verify_zip()
                 return self._build_empty_result(query, cumulative_organic_count)
 
             self._scroll_entire_page()
-
-            try:
-                WebDriverWait(self.driver, 8).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-component-type='s-search-result']"))
-                )
-            except TimeoutException:
-                break
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             result_items = soup.select("div[data-component-type='s-search-result']")
@@ -301,7 +266,6 @@ class AmazonOrganicRanker:
                 if self._is_non_organic_placement(item):
                     continue
 
-                # Multi-selector ASIN Extractor
                 asin = item.get('data-asin', '').strip()
                 if not asin:
                     for link in item.select("a[href*='/dp/']"):
@@ -320,7 +284,6 @@ class AmazonOrganicRanker:
                 page_organic_position += 1
                 cumulative_organic_count += 1
 
-                # Multi-layout Title Extractor
                 title_el = (
                     item.select_one("h2 a span") or 
                     item.select_one("h2 span") or 
@@ -367,9 +330,6 @@ class AmazonOrganicRanker:
         )
 
 
-# ==========================================
-# RETRY-ENABLED GOOGLE SHEETS CLIENT
-# ==========================================
 def get_robust_gspread_client(json_key_path: str):
     session = Session()
     retries = Retry(
@@ -385,15 +345,11 @@ def get_robust_gspread_client(json_key_path: str):
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_file(json_key_path, scopes=scope)
-    
     client = gspread.Client(auth=creds)
     client.session = session
     return client
 
 
-# ==========================================
-# REAL-TIME LIVE SYNC PIPELINE
-# ==========================================
 def fetch_keywords_and_sync_results(
     json_key_path: str,
     spreadsheet_name: str,
@@ -413,7 +369,6 @@ def fetch_keywords_and_sync_results(
             logger.error(f"Credentials JSON file not found at '{json_key_path}'!")
             return
 
-    logger.info(f"Connecting to Google Sheets using: {json_key_path}")
     client = get_robust_gspread_client(json_key_path)
     sheet = client.open(spreadsheet_name)
 
@@ -457,14 +412,8 @@ def fetch_keywords_and_sync_results(
     output_worksheet.clear()
     
     headers = [
-        "Timestamp",                 # Col A
-        "Keyword",                   # Col B
-        "Brand Name",                # Col C
-        "ASIN",                      # Col D
-        "Page Number",               # Col E
-        "Global Organic Rank",       # Col F
-        "Manual Rank",               # Col G
-        "Total Listings Scanned"     # Col H
+        "Timestamp", "Keyword", "Brand Name", "ASIN", 
+        "Page Number", "Global Organic Rank", "Manual Rank", "Total Listings Scanned"
     ]
     output_worksheet.append_row(headers)
 
@@ -473,7 +422,7 @@ def fetch_keywords_and_sync_results(
 
     for idx, target in enumerate(targets, 1):
         if idx > 1 and idx % driver_restart_interval == 0:
-            logger.info(f"=== Periodic Browser Restart (Keyword {idx}/{total_keywords}) ===")
+            logger.info(f"=== Periodic Driver Restart (Keyword {idx}/{total_keywords}) ===")
             ranker._init_driver()
             ranker.update_and_verify_zip()
 
@@ -504,15 +453,12 @@ def fetch_keywords_and_sync_results(
             logger.info(f"--- Batch Completed ({idx}/{total_keywords}). Pausing for {round(delay, 1)}s... ---")
             time.sleep(delay)
         else:
-            time.sleep(random.uniform(2.0, 4.0))
+            time.sleep(random.uniform(3.0, 5.0))
 
     ranker.close()
-    logger.info("Processing complete! All products properly mapped.")
+    logger.info("Processing complete!")
 
 
-# ==========================================
-# ENTRY POINT
-# ==========================================
 if __name__ == "__main__":
     CREDENTIALS_JSON = "gcp_key.json"
     SPREADSHEET_NAME = "Keywords_Research"
