@@ -26,10 +26,10 @@ jobs:
         run: |
           pip install selenium beautifulsoup4 gspread google-auth
 
-      # SECRET SE TEMPORARY JSON FILE BANANA (FIXED FOR JSON ERROR)
+      # SECRET SE TEMPORARY JSON FILE BANANA
       - name: Create GCP Credentials File
         run: |
-          cat << 'EOF' > credentials.json
+          cat << 'EOF' > gcp_key.json
           ${{ secrets.GCP_SA_KEY }}
           EOF
 
