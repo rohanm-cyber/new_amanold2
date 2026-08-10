@@ -127,59 +127,59 @@ class AmazonOrganicRanker:
             
         return False
 
-  def update_and_verify_zip(self) -> bool:
-        if not self.zip_code:
-            return True
-
-        for attempt in range(1, self.max_retries + 1):
-            logger.info(f"Setting ZIP Code to '{self.zip_code}' (Attempt {attempt}/{self.max_retries})...")
-            try:
-                self.driver.get(self.marketplace_url)
-                time.sleep(random.uniform(3.0, 5.0))
-
-                if self._check_for_bot_detection():
-                    logger.info("Rotating proxy due to bot detection during ZIP update...")
-                    self._init_driver()
-                    continue
-
+    def update_and_verify_zip(self) -> bool:
+            if not self.zip_code:
+                return True
+    
+            for attempt in range(1, self.max_retries + 1):
+                logger.info(f"Setting ZIP Code to '{self.zip_code}' (Attempt {attempt}/{self.max_retries})...")
                 try:
-                    location_btn = WebDriverWait(self.driver, 7).until(
-                        EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
-                    )
-                    location_btn.click()
-                    time.sleep(random.uniform(1.5, 2.5))
-
-                    zip_input = WebDriverWait(self.driver, 7).until(
-                        EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
-                    )
-                    zip_input.clear()
-
-                    for char in str(self.zip_code):
-                        zip_input.send_keys(char)
-                        time.sleep(random.uniform(0.08, 0.18))
-
-                    time.sleep(random.uniform(0.8, 1.5))
-                    zip_input.send_keys(Keys.ENTER)
-                    time.sleep(random.uniform(2.0, 3.0))
-
-                    apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
-                    if apply_btn:
-                        self.driver.execute_script("arguments[0].click();", apply_btn[0])
-                        time.sleep(random.uniform(2.0, 3.5))
-
-                    self.driver.refresh()
-                    time.sleep(random.uniform(2.5, 4.0))
-                    logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
-                    return True
-
-                except Exception as zip_e:
-                    logger.warning(f"ZIP modal interaction skipped: {str(zip_e)}. Continuing search directly...")
-                    return True
-
-            except Exception as e:
-                logger.warning(f"ZIP Update Attempt {attempt} Failed: {str(e)}")
-
-        return False
+                    self.driver.get(self.marketplace_url)
+                    time.sleep(random.uniform(3.0, 5.0))
+    
+                    if self._check_for_bot_detection():
+                        logger.info("Rotating proxy due to bot detection during ZIP update...")
+                        self._init_driver()
+                        continue
+    
+                    try:
+                        location_btn = WebDriverWait(self.driver, 7).until(
+                            EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
+                        )
+                        location_btn.click()
+                        time.sleep(random.uniform(1.5, 2.5))
+    
+                        zip_input = WebDriverWait(self.driver, 7).until(
+                            EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
+                        )
+                        zip_input.clear()
+    
+                        for char in str(self.zip_code):
+                            zip_input.send_keys(char)
+                            time.sleep(random.uniform(0.08, 0.18))
+    
+                        time.sleep(random.uniform(0.8, 1.5))
+                        zip_input.send_keys(Keys.ENTER)
+                        time.sleep(random.uniform(2.0, 3.0))
+    
+                        apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
+                        if apply_btn:
+                            self.driver.execute_script("arguments[0].click();", apply_btn[0])
+                            time.sleep(random.uniform(2.0, 3.5))
+    
+                        self.driver.refresh()
+                        time.sleep(random.uniform(2.5, 4.0))
+                        logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
+                        return True
+    
+                    except Exception as zip_e:
+                        logger.warning(f"ZIP modal interaction skipped: {str(zip_e)}. Continuing search directly...")
+                        return True
+    
+                except Exception as e:
+                    logger.warning(f"ZIP Update Attempt {attempt} Failed: {str(e)}")
+    
+            return False
 
     def _scroll_entire_page(self):
         for _ in range(4):
