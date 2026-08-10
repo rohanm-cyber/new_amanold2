@@ -111,7 +111,7 @@ class StealthAmazonRanker:
                 pass
             self.driver = None
 
-    def _detect_and_handle_block((self) -> bool:
+    def _detect_and_handle_block(self) -> bool:
         """Detects Captcha, AWS WAF, and Robot Check Pages."""
         if not self.driver:
             return True
