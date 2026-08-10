@@ -73,7 +73,7 @@ class AmazonOrganicRanker:
         self.max_retries = max_retries
         self.driver: Optional[uc.Chrome] = None
 
-       def _init_driver(self, proxy: Optional[str] = None):
+    def _init_driver(self, proxy: Optional[str] = None):
             if self.driver:
                 self.close()
     
