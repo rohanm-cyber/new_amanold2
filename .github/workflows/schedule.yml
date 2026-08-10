@@ -37,11 +37,17 @@ jobs:
         run: |
           echo "$GCP_KEY" > gcp_key.json
 
+      - name: Create Proxies File
+        env:
+          PROXIES_DATA: ${{ secrets.PROXIES_LIST }}
+        run: |
+          echo "$PROXIES_DATA" > proxies.txt
+
       - name: Run Ranker Script
         run: |
           python amazon_ranking.py
 
-      - name: Cleanup Credentials
+      - name: Cleanup Sensitive Data
         if: always()
         run: |
-          rm -f gcp_key.json
+          rm -f gcp_key.json proxies.txt
