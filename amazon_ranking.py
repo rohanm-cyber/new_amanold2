@@ -8,7 +8,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional
 
 import gspread
 from bs4 import BeautifulSoup
@@ -17,16 +17,12 @@ from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-# Undetected Chromedriver import for Anti-Bot Bypass
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-# ==========================================
-# LOGGING CONFIGURATION
-# ==========================================
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -51,15 +47,23 @@ class AmazonOrganicRanker:
         marketplace_url: str = "https://www.amazon.com",
         zip_code: Optional[str] = "12345",
         max_pages: int = 5,
-        max_retries: int = 3
+        max_retries: int = 3,
+        proxy_list: Optional[List[str]] = None
     ):
         self.marketplace_url = marketplace_url.rstrip('/')
         self.zip_code = zip_code
         self.max_pages = max_pages
         self.max_retries = max_retries
+        self.proxy_list = proxy_list or []
+        self.current_proxy: Optional[str] = None
         self.driver: Optional[uc.Chrome] = None
 
-    def _init_driver(self, proxy: Optional[str] = None):
+    def _get_random_proxy(self) -> Optional[str]:
+        if not self.proxy_list:
+            return None
+        return random.choice(self.proxy_list)
+
+    def _init_driver(self):
         if self.driver:
             self.close()
 
@@ -76,8 +80,13 @@ class AmazonOrganicRanker:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        if proxy:
-            options.add_argument(f"--proxy-server={proxy}")
+        # Rotate Proxy if available
+        self.current_proxy = self._get_random_proxy()
+        if self.current_proxy:
+            options.add_argument(f"--proxy-server={self.current_proxy}")
+            logger.info(f"Initializing browser with Proxy: {self.current_proxy}")
+        else:
+            logger.info("Initializing browser without proxy (Direct IP).")
 
         self.driver = uc.Chrome(options=options)
         logger.info("Undetected Chrome Browser successfully initialized.")
@@ -105,7 +114,7 @@ class AmazonOrganicRanker:
         ]
 
         if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
-            logger.warning("[!] CAPTCHA / Bot Check Detected on Amazon!")
+            logger.warning(f"[!] CAPTCHA / Bot Check Detected on Proxy: {self.current_proxy or 'Direct IP'}")
             return True
         return False
 
@@ -120,7 +129,8 @@ class AmazonOrganicRanker:
                 time.sleep(random.uniform(3.0, 5.0))
 
                 if self._check_for_bot_detection():
-                    time.sleep(random.uniform(5.0, 8.0))
+                    logger.info("Rotating proxy due to bot detection during ZIP update...")
+                    self._init_driver()
                     continue
 
                 try:
@@ -190,28 +200,22 @@ class AmazonOrganicRanker:
             return False
 
         target_raw = target_brand.strip()
-        
-        # 1. Direct ASIN Match (Agar target_brand 10-digit ASIN hai)
         item_asin = item_soup.get('data-asin', '').strip().upper()
         if target_raw.upper() == item_asin:
             return True
 
-        # 2. Normalized String Matching (Space, hyphen, punctuation remove karke)
         target_norm = re.sub(r'[^a-z0-9]', '', target_raw.lower())
         if not target_norm:
             return False
 
-        # Title Check
         title_norm = re.sub(r'[^a-z0-9]', '', raw_title.lower())
         if target_norm in title_norm:
             return True
 
-        # Brand Attribute & Store Links Check
         brand_attr = re.sub(r'[^a-z0-9]', '', item_soup.get('data-brand', '').lower())
         if brand_attr and (target_norm in brand_attr or brand_attr in target_norm):
             return True
 
-        # Brand Text Spans Check (e.g., "Visit the Pillow Store", "Brand: Pillowcase")
         brand_selectors = [
             ".s-line-clamp-1",
             ".a-size-base-plus",
@@ -245,7 +249,7 @@ class AmazonOrganicRanker:
             try:
                 self.driver.get(search_url)
             except Exception as e:
-                logger.error(f"Navigation error: {str(e)}. Re-initializing driver...")
+                logger.error(f"Navigation error: {str(e)}. Re-initializing driver with new proxy...")
                 self._init_driver()
                 self.update_and_verify_zip()
                 self.driver.get(search_url)
@@ -253,20 +257,18 @@ class AmazonOrganicRanker:
             time.sleep(random.uniform(3.0, 5.0))
 
             if self._check_for_bot_detection():
-                logger.warning("Bot block detected during keyword search. Restarting driver session...")
+                logger.warning("Bot block detected. Rotating proxy and restarting session...")
                 self._init_driver()
                 self.update_and_verify_zip()
-                return None
+                return None  # Retry or skip current keyword safely
 
             self._scroll_entire_page()
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-            # Broadened selector to catch all search result containers
             result_items = soup.select("div[data-asin]")
 
             for item in result_items:
                 asin = item.get('data-asin', '').strip()
-                # Skip empty ASINs or ad widgets without ASIN
                 if not asin or len(asin) != 10:
                     continue
 
@@ -293,6 +295,7 @@ class AmazonOrganicRanker:
 
         return None
 
+
 def get_robust_gspread_client(json_key_path: str):
     session = Session()
     retries = Retry(
@@ -318,9 +321,9 @@ def process_rank_db_sheet(
     spreadsheet_id_or_name: str,
     target_sheet_name: str,
     ranker: AmazonOrganicRanker,
-    batch_size: int = 20,
+    batch_size: int = 10,
     batch_delay_seconds: float = 15.0,
-    driver_restart_interval: int = 30
+    driver_restart_interval: int = 15
 ):
     if not os.path.exists(json_key_path):
         if os.path.exists("Credentials.json"):
@@ -333,7 +336,6 @@ def process_rank_db_sheet(
 
     client = get_robust_gspread_client(json_key_path)
     
-    # Open sheet either by ID or by Key/Name
     try:
         if len(spreadsheet_id_or_name) > 30 and "/" not in spreadsheet_id_or_name:
             sheet = client.open_by_key(spreadsheet_id_or_name)
@@ -355,8 +357,6 @@ def process_rank_db_sheet(
         return
 
     headers = all_rows[0]
-    
-    # Detect Keyword and Brand columns dynamically
     kw_col_idx = next((i for i, h in enumerate(headers) if "keyword" in h.lower()), -1)
     brand_col_idx = next((i for i, h in enumerate(headers) if "brand" in h.lower()), -1)
 
@@ -364,19 +364,11 @@ def process_rank_db_sheet(
         logger.error("Could not locate 'Keyword' or 'Brand' header columns in the sheet.")
         return
 
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
     
-    # Identify or create date column (e.g., Column 9, 10, 11...)
-    date_col_idx = -1
-    for idx, h in enumerate(headers):
-        if today_str in h:
-            date_col_idx = idx
-            break
-
-    if date_col_idx == -1:
-        date_col_idx = len(headers)
-        worksheet.update_cell(1, date_col_idx + 1, today_str)
-        logger.info(f"Added new date header column '{today_str}' at Column Index {date_col_idx + 1}.")
+    date_col_idx = len(headers)
+    worksheet.update_cell(1, date_col_idx + 1, now_str)
+    logger.info(f"Created new timestamp header column '{now_str}' at Column Index {date_col_idx + 1}.")
 
     targets: List[TargetQuery] = []
     for r_idx, row in enumerate(all_rows[1:], start=2):
@@ -386,7 +378,7 @@ def process_rank_db_sheet(
             targets.append(TargetQuery(row_idx=r_idx, keyword=kw, target_brand=brand))
 
     total_keywords = len(targets)
-    logger.info(f"Found {total_keywords} keywords to rank for today's column ({today_str}).")
+    logger.info(f"Found {total_keywords} keywords to rank.")
 
     ranker._init_driver()
     ranker.update_and_verify_zip()
@@ -395,7 +387,7 @@ def process_rank_db_sheet(
 
     for idx, target in enumerate(targets, 1):
         if idx > 1 and idx % driver_restart_interval == 0:
-            logger.info(f"=== Periodic Driver Restart (Keyword {idx}/{total_keywords}) ===")
+            logger.info(f"=== Periodic Proxy & Driver Rotation (Keyword {idx}/{total_keywords}) ===")
             ranker._init_driver()
             ranker.update_and_verify_zip()
 
@@ -403,11 +395,10 @@ def process_rank_db_sheet(
         rank_val = rank_found if rank_found is not None else "NOT_FOUND"
 
         logger.info(
-            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Organic Rank: {rank_val}"
+            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Rank: {rank_val}"
         )
 
         cell_updates.append(gspread.Cell(target.row_idx, date_col_idx + 1, rank_val))
-
         gc.collect()
 
         if idx % batch_size == 0 and idx < total_keywords:
@@ -436,10 +427,19 @@ if __name__ == "__main__":
     ZIP_CODE = "12345"
     MAX_PAGE_LIMIT = 8
 
+    # Proxy list load karna (Aap yahan apne proxies ki list de sakte hain ya file se read kar sakte hain)
+    # Format: "http://username:password@ip:port" ya "http://ip:port"
+    PROXY_POOL = []
+    
+    if os.path.exists("proxies.txt"):
+        with open("proxies.txt", "r") as f:
+            PROXY_POOL = [line.strip() for line in f if line.strip()]
+
     ranker = AmazonOrganicRanker(
         marketplace_url="https://www.amazon.com",
         zip_code=ZIP_CODE,
-        max_pages=MAX_PAGE_LIMIT
+        max_pages=MAX_PAGE_LIMIT,
+        proxy_list=PROXY_POOL
     )
 
     process_rank_db_sheet(
@@ -449,5 +449,5 @@ if __name__ == "__main__":
         ranker=ranker,
         batch_size=10,
         batch_delay_seconds=10.0,
-        driver_restart_interval=20
+        driver_restart_interval=15
     )
