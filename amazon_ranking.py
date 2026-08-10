@@ -104,19 +104,117 @@ class AmazonOrganicRanker:
         if not self.driver:
             return False
 
-        page_source = self.driver.page_source.lower()
-        title = self.driver.title.lower()
+        try:
+            page_source = self.driver.page_source.lower()
+            title = self.driver.title.lower()
+        except Exception:
+            return True
 
-        captcha_indicators = [
+        block_indicators = [
             "robot check",
             "enter the characters you see below",
-            "sorry, we just need to make sure you're not a robot"
+            "sorry, we just need to make sure you're not a robot",
+            "sorry! something went wrong!",
+            "dogs of amazon",
+            "503 service unavailable",
+            "500 internal server error",
+            "api error"
         ]
 
-        if any(indicator in page_source or indicator in title for indicator in captcha_indicators):
-            logger.warning(f"[!] CAPTCHA / Bot Check Detected on Proxy: {self.current_proxy or 'Direct IP'}")
+        if any(indicator in page_source or indicator in title for indicator in block_indicators):
+            logger.warning(f"[!] Amazon Block Page Detected ('{self.driver.title}') on Proxy: {self.current_proxy or 'Direct IP'}")
             return True
+            
         return False
+
+    def fetch_organic_rank(self, query: TargetQuery, max_keyword_retries: int = 3) -> Optional[int]:
+        for attempt in range(1, max_keyword_retries + 1):
+            if not self.driver:
+                self._init_driver()
+                self.update_and_verify_zip()
+
+            cumulative_organic_count = 0
+            page_failed = False
+
+            for page_num in range(1, self.max_pages + 1):
+                encoded_keyword = urllib.parse.quote_plus(query.keyword)
+                search_url = (
+                    f"{self.marketplace_url}/s?k={encoded_keyword}"
+                    if page_num == 1
+                    else f"{self.marketplace_url}/s?k={encoded_keyword}&page={page_num}"
+                )
+
+                try:
+                    self.driver.get(search_url)
+                except Exception as e:
+                    logger.error(f"Navigation error: {str(e)}. Re-initializing driver...")
+                    self._init_driver()
+                    self.update_and_verify_zip()
+                    page_failed = True
+                    break
+
+                time.sleep(random.uniform(3.5, 6.0))
+
+                page_title = self.driver.title
+                logger.info(f"Attempt {attempt} | Page {page_num} Title: '{page_title}'")
+
+                # Check if Amazon blocked the request
+                if self._check_for_bot_detection():
+                    logger.warning(f"Block page detected on Keyword '{query.keyword}' (Attempt {attempt}/{max_keyword_retries}). Rotating proxy...")
+                    self._init_driver()
+                    self.update_and_verify_zip()
+                    page_failed = True
+                    break  # Break page loop and retry keyword with new proxy
+
+                self._scroll_entire_page()
+
+                soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+                result_items = soup.select("div[data-asin]")
+
+                valid_items = [it for it in result_items if it.get('data-asin', '').strip()]
+                logger.info(f"Page {page_num}: Found {len(valid_items)} ASIN containers.")
+
+                if len(valid_items) == 0:
+                    logger.warning("0 products loaded on page! Block detected. Retrying keyword...")
+                    self._init_driver()
+                    self.update_and_verify_zip()
+                    page_failed = True
+                    break
+
+                for item in result_items:
+                    asin = item.get('data-asin', '').strip()
+                    if not asin or len(asin) != 10:
+                        continue
+
+                    if self._is_non_organic_placement(item):
+                        continue
+
+                    cumulative_organic_count += 1
+
+                    title_el = (
+                        item.select_one("h2 a span") or 
+                        item.select_one("h2 span") or 
+                        item.select_one("a.a-link-normal span.a-text-normal") or 
+                        item.select_one("h2 a") or 
+                        item.select_one(".a-size-base-plus")
+                    )
+                    title = title_el.get_text(strip=True) if title_el else "N/A"
+
+                    if self._is_brand_match(query.target_brand, title, item):
+                        logger.info(f"MATCH FOUND! ASIN: {asin} | Rank: {cumulative_organic_count}")
+                        return cumulative_organic_count
+
+                next_btn = soup.select_one("a.s-pagination-next")
+                if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
+                    break
+
+            # If iteration completed without block and brand was not found
+            if not page_failed:
+                logger.info(f"Scanned {cumulative_organic_count} listings across {self.max_pages} pages. Brand '{query.target_brand}' not present.")
+                return None
+
+        logger.error(f"Failed to fetch keyword '{query.keyword}' after {max_keyword_retries} retries due to persistent blocks.")
+        return None
 
     def update_and_verify_zip(self) -> bool:
         if not self.zip_code:
