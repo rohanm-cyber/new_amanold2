@@ -249,23 +249,34 @@ class AmazonOrganicRanker:
             try:
                 self.driver.get(search_url)
             except Exception as e:
-                logger.error(f"Navigation error: {str(e)}. Re-initializing driver with new proxy...")
+                logger.error(f"Navigation error: {str(e)}. Re-initializing driver...")
                 self._init_driver()
                 self.update_and_verify_zip()
                 self.driver.get(search_url)
 
             time.sleep(random.uniform(3.0, 5.0))
 
+            # Debug Check: See Page Title
+            page_title = self.driver.title
+            logger.info(f"Page {page_num} Title: '{page_title}'")
+
             if self._check_for_bot_detection():
-                logger.warning("Bot block detected. Rotating proxy and restarting session...")
+                logger.warning("Bot block detected. Rotating proxy...")
                 self._init_driver()
                 self.update_and_verify_zip()
-                return None  # Retry or skip current keyword safely
+                return None
 
             self._scroll_entire_page()
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             result_items = soup.select("div[data-asin]")
+
+            # Debug Check: Total listings captured on page
+            valid_items = [it for it in result_items if it.get('data-asin', '').strip()]
+            logger.info(f"Page {page_num}: Found {len(valid_items)} ASIN containers.")
+
+            if len(valid_items) == 0:
+                logger.warning("0 products loaded on page! Amazon is blocking or page failed to load.")
 
             for item in result_items:
                 asin = item.get('data-asin', '').strip()
@@ -287,12 +298,14 @@ class AmazonOrganicRanker:
                 title = title_el.get_text(strip=True) if title_el else "N/A"
 
                 if self._is_brand_match(query.target_brand, title, item):
+                    logger.info(f"MATCH FOUND! ASIN: {asin} | Title: {title[:40]}... | Rank: {cumulative_organic_count}")
                     return cumulative_organic_count
 
             next_btn = soup.select_one("a.s-pagination-next")
             if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
                 break
 
+        logger.info(f"Scanned total {cumulative_organic_count} organic listings across {self.max_pages} pages. Brand '{query.target_brand}' not present.")
         return None
 
 
