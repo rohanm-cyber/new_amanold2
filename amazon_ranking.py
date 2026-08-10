@@ -67,7 +67,6 @@ class AmazonOrganicRanker:
         if self.driver:
             self.close()
 
-        # 1. Chrome Options initialize aur configure karein
         options = uc.ChromeOptions()
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1920,1080")
@@ -81,7 +80,6 @@ class AmazonOrganicRanker:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        # 2. Proxy options add karein (agar available ho)
         self.current_proxy = self._get_random_proxy()
         if self.current_proxy:
             options.add_argument(f"--proxy-server={self.current_proxy}")
@@ -89,10 +87,9 @@ class AmazonOrganicRanker:
         else:
             logger.info("Initializing browser without proxy (Direct IP).")
 
-        # 3. options aur version_main pass karke driver start karein
-        # System ke Chrome version 150 ke mutabiq version_main=150 rakha hai
         self.driver = uc.Chrome(options=options, version_main=150)
         logger.info("Undetected Chrome Browser successfully initialized.")
+
     def close(self):
         if self.driver:
             try:
@@ -124,7 +121,7 @@ class AmazonOrganicRanker:
         ]
 
         if any(indicator in page_source or indicator in title for indicator in block_indicators):
-            logger.warning(f"[!] Amazon Block Page Detected ('{self.driver.title}') on Proxy: {self.current_proxy or 'Direct IP'}")
+            logger.warning(f"[!] Amazon Block Page Detected ('{self.driver.title}')")
             return True
 
         return False
@@ -249,6 +246,7 @@ class AmazonOrganicRanker:
                 self.update_and_verify_zip()
 
             cumulative_organic_count = 0
+            seen_asins = set()  # DUPLICATE ASINS ACCUMULATION DEDUPLICATION
             page_failed = False
 
             for page_num in range(1, self.max_pages + 1):
@@ -273,24 +271,28 @@ class AmazonOrganicRanker:
                 page_title = self.driver.title
                 logger.info(f"Attempt {attempt} | Page {page_num} Title: '{page_title}'")
 
-                # Check if Amazon blocked the request
                 if self._check_for_bot_detection():
-                    logger.warning(f"Block page detected on Keyword '{query.keyword}' (Attempt {attempt}/{max_keyword_retries}). Rotating proxy...")
+                    logger.warning(f"Block page detected on Keyword '{query.keyword}' (Attempt {attempt}/{max_keyword_retries}).")
                     self._init_driver()
                     self.update_and_verify_zip()
                     page_failed = True
-                    break  # Break page loop and retry keyword with new proxy
+                    break
 
                 self._scroll_entire_page()
 
                 soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-                result_items = soup.select("div[data-asin]")
+                
+                # ONLY Target standard search result cards (Ignores carousels and widgets)
+                result_items = soup.select("div[data-component-type='s-search-result']")
 
-                valid_items = [it for it in result_items if it.get('data-asin', '').strip()]
-                logger.info(f"Page {page_num}: Found {len(valid_items)} ASIN containers.")
+                if not result_items:
+                    # Fallback if Amazon changes component type attributes
+                    result_items = soup.select("div.s-result-item[data-asin]")
 
-                if len(valid_items) == 0:
-                    logger.warning("0 products loaded on page! Block detected. Retrying keyword...")
+                logger.info(f"Page {page_num}: Found {len(result_items)} main search cards.")
+
+                if not result_items:
+                    logger.warning("0 search items loaded on page! Block suspected.")
                     self._init_driver()
                     self.update_and_verify_zip()
                     page_failed = True
@@ -298,12 +300,16 @@ class AmazonOrganicRanker:
 
                 for item in result_items:
                     asin = item.get('data-asin', '').strip()
-                    if not asin or len(asin) != 10:
+
+                    # Deduplicate ASIN & Filter ads
+                    if not asin or len(asin) != 10 or asin in seen_asins:
                         continue
 
                     if self._is_non_organic_placement(item):
                         continue
 
+                    # Mark ASIN as processed
+                    seen_asins.add(asin)
                     cumulative_organic_count += 1
 
                     title_el = (
@@ -316,19 +322,17 @@ class AmazonOrganicRanker:
                     title = title_el.get_text(strip=True) if title_el else "N/A"
 
                     if self._is_brand_match(query.target_brand, title, item):
-                        logger.info(f"MATCH FOUND! ASIN: {asin} | Rank: {cumulative_organic_count}")
+                        logger.info(f"MATCH FOUND! ASIN: {asin} | REAL Organic Rank: {cumulative_organic_count}")
                         return cumulative_organic_count
 
                 next_btn = soup.select_one("a.s-pagination-next")
                 if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
                     break
 
-            # If iteration completed without block and brand was not found
             if not page_failed:
-                logger.info(f"Scanned {cumulative_organic_count} listings across {self.max_pages} pages. Brand '{query.target_brand}' not present.")
+                logger.info(f"Scanned {cumulative_organic_count} unique organic items across {self.max_pages} pages. Brand '{query.target_brand}' not found.")
                 return None
 
-        logger.error(f"Failed to fetch keyword '{query.keyword}' after {max_keyword_retries} retries due to persistent blocks.")
         return None
 
 
@@ -357,8 +361,6 @@ def process_rank_db_sheet(
     spreadsheet_id_or_name: str,
     target_sheet_name: str,
     ranker: AmazonOrganicRanker,
-    batch_size: int = 10,
-    batch_delay_seconds: float = 15.0,
     driver_restart_interval: int = 15
 ):
     if not os.path.exists(json_key_path):
@@ -401,10 +403,11 @@ def process_rank_db_sheet(
         return
 
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
+    date_col_idx = len(headers) + 1  # 1-based indexing for Gspread
 
-    date_col_idx = len(headers)
-    worksheet.update_cell(1, date_col_idx + 1, now_str)
-    logger.info(f"Created new timestamp header column '{now_str}' at Column Index {date_col_idx + 1}.")
+    # Instantly add new column header in Google Sheets
+    worksheet.update_cell(1, date_col_idx, now_str)
+    logger.info(f"Created new timestamp header column '{now_str}' at Column Index {date_col_idx}.")
 
     targets: List[TargetQuery] = []
     for r_idx, row in enumerate(all_rows[1:], start=2):
@@ -419,8 +422,6 @@ def process_rank_db_sheet(
     ranker._init_driver()
     ranker.update_and_verify_zip()
 
-    cell_updates = []
-
     for idx, target in enumerate(targets, 1):
         if idx > 1 and idx % driver_restart_interval == 0:
             logger.info(f"=== Periodic Proxy & Driver Rotation (Keyword {idx}/{total_keywords}) ===")
@@ -431,25 +432,18 @@ def process_rank_db_sheet(
         rank_val = rank_found if rank_found is not None else "NOT_FOUND"
 
         logger.info(
-            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Rank: {rank_val}"
+            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Real Rank: {rank_val}"
         )
 
-        cell_updates.append(gspread.Cell(target.row_idx, date_col_idx + 1, rank_val))
+        # INSTANT DIRECT UPDATE TO GOOGLE SHEETS
+        try:
+            worksheet.update_cell(target.row_idx, date_col_idx, str(rank_val))
+            logger.info(f"--> Saved directly to Sheet (Row: {target.row_idx}, Col: {date_col_idx})")
+        except Exception as update_err:
+            logger.error(f"Failed to update Sheet for row {target.row_idx}: {str(update_err)}")
+
         gc.collect()
-
-        if idx % batch_size == 0 and idx < total_keywords:
-            logger.info("Batch completed. Updating Google Sheets in bulk...")
-            worksheet.update_cells(cell_updates)
-            cell_updates.clear()
-
-            delay = batch_delay_seconds + random.uniform(2.0, 5.0)
-            logger.info(f"--- Pausing for {round(delay, 1)}s... ---")
-            time.sleep(delay)
-        else:
-            time.sleep(random.uniform(3.0, 5.0))
-
-    if cell_updates:
-        worksheet.update_cells(cell_updates)
+        time.sleep(random.uniform(3.0, 5.0))
 
     ranker.close()
     logger.info("Rank update task successfully completed!")
@@ -461,11 +455,9 @@ if __name__ == "__main__":
     TARGET_SHEET_NAME = "rank_db"
 
     ZIP_CODE = "12345"
-    MAX_PAGE_LIMIT = 8
+    MAX_PAGE_LIMIT = 5
 
-    # Proxy list load karna
     PROXY_POOL = []
-
     if os.path.exists("proxies.txt"):
         with open("proxies.txt", "r") as f:
             PROXY_POOL = [line.strip() for line in f if line.strip()]
@@ -482,7 +474,5 @@ if __name__ == "__main__":
         spreadsheet_id_or_name=SPREADSHEET_ID_OR_NAME,
         target_sheet_name=TARGET_SHEET_NAME,
         ranker=ranker,
-        batch_size=10,
-        batch_delay_seconds=10.0,
         driver_restart_interval=15
     )
