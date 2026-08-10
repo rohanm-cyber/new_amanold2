@@ -3,22 +3,26 @@ name: Run Amazon Organic Ranker
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 13,23 * * *' # Optional: Har din run karne ke liye
+    - cron: '0 13,23 * * *'
 
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: Install Chrome
+      - name: Install Google Chrome
         run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -
+          sudo sh -c 'echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google-chrome.list'
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable
 
@@ -27,19 +31,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # SECRET SE TEMPORARY JSON FILE BANANA
       - name: Create GCP Credentials File
+        env:
+          GCP_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
-          cat << 'EOF' > gcp_key.json
-          ${{ secrets.GCP_SA_KEY }}
-          EOF
+          echo "$GCP_KEY" > gcp_key.json
 
-      # PYTHON SCRIPT RUN KARNA
       - name: Run Ranker Script
         run: |
           python amazon_ranking.py
 
-      # RUN HONE KE BAAD FILE DELETE KARNA (SECURITY)
       - name: Cleanup Credentials
         if: always()
         run: |
