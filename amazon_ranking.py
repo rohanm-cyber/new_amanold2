@@ -184,35 +184,46 @@ class AmazonOrganicRanker:
 
         return False
 
-    def _is_brand_match(self, target_brand: str, raw_title: str, item_soup) -> bool:
-        target_clean = re.sub(r'[^a-z0-9]', '', target_brand.lower())
-        if not target_clean:
+    @staticmethod
+    def _is_brand_match(target_brand: str, raw_title: str, item_soup) -> bool:
+        if not target_brand:
             return False
 
-        title_clean = re.sub(r'[^a-z0-9]', '', raw_title.lower())
-        if target_clean in title_clean:
+        target_raw = target_brand.strip()
+        
+        # 1. Direct ASIN Match (Agar target_brand 10-digit ASIN hai)
+        item_asin = item_soup.get('data-asin', '').strip().upper()
+        if target_raw.upper() == item_asin:
             return True
 
+        # 2. Normalized String Matching (Space, hyphen, punctuation remove karke)
+        target_norm = re.sub(r'[^a-z0-9]', '', target_raw.lower())
+        if not target_norm:
+            return False
+
+        # Title Check
+        title_norm = re.sub(r'[^a-z0-9]', '', raw_title.lower())
+        if target_norm in title_norm:
+            return True
+
+        # Brand Attribute & Store Links Check
+        brand_attr = re.sub(r'[^a-z0-9]', '', item_soup.get('data-brand', '').lower())
+        if brand_attr and (target_norm in brand_attr or brand_attr in target_norm):
+            return True
+
+        # Brand Text Spans Check (e.g., "Visit the Pillow Store", "Brand: Pillowcase")
         brand_selectors = [
-            ".s-line-clamp-1", 
-            ".a-size-base-plus", 
-            ".a-row.a-size-base",
+            ".s-line-clamp-1",
+            ".a-size-base-plus",
             "span.a-size-base.a-color-secondary",
-            ".a-color-base"
+            ".a-row.a-size-base",
+            "h2 + div"
         ]
         for sel in brand_selectors:
             for elem in item_soup.select(sel):
                 elem_text = re.sub(r'[^a-z0-9]', '', elem.get_text(strip=True).lower())
-                if target_clean in elem_text:
+                if elem_text and (target_norm in elem_text or elem_text in target_norm):
                     return True
-
-        raw_brand_attr = re.sub(r'[^a-z0-9]', '', item_soup.get('data-brand', '').lower())
-        if target_clean in raw_brand_attr:
-            return True
-
-        item_text_clean = re.sub(r'[^a-z0-9]', '', item_soup.get_text().lower())
-        if target_clean in item_text_clean:
-            return True
 
         return False
 
@@ -250,25 +261,16 @@ class AmazonOrganicRanker:
             self._scroll_entire_page()
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-            result_items = soup.select("div[data-component-type='s-search-result']")
+            # Broadened selector to catch all search result containers
+            result_items = soup.select("div[data-asin]")
 
             for item in result_items:
-                if self._is_non_organic_placement(item):
+                asin = item.get('data-asin', '').strip()
+                # Skip empty ASINs or ad widgets without ASIN
+                if not asin or len(asin) != 10:
                     continue
 
-                asin = item.get('data-asin', '').strip()
-                if not asin:
-                    for link in item.select("a[href*='/dp/']"):
-                        href = link.get('href', '')
-                        if '/dp/' in href:
-                            try:
-                                asin = href.split('/dp/')[1].split('/')[0].split('?')[0].upper()
-                                if len(asin) == 10:
-                                    break
-                            except Exception:
-                                pass
-
-                if not asin or len(asin) != 10:
+                if self._is_non_organic_placement(item):
                     continue
 
                 cumulative_organic_count += 1
@@ -290,7 +292,6 @@ class AmazonOrganicRanker:
                 break
 
         return None
-
 
 def get_robust_gspread_client(json_key_path: str):
     session = Session()
