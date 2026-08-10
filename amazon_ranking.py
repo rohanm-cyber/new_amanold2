@@ -7,7 +7,8 @@ import sys
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import List, Optional
+from datetime import datetime
+from typing import List, Optional, Dict, Tuple
 
 import gspread
 from bs4 import BeautifulSoup
@@ -39,24 +40,9 @@ logger = logging.getLogger("AmazonRanker")
 
 @dataclass
 class TargetQuery:
+    row_idx: int
     keyword: str
     target_brand: str
-    manual_rank: str
-
-
-@dataclass
-class RankResult:
-    timestamp: str
-    keyword: str
-    zip_code: str
-    brand_name: str
-    asin: str
-    product_title: str
-    page_number: int
-    position_on_page: int
-    global_organic_rank: int
-    manual_rank: str
-    total_listings_scanned: int
 
 
 class AmazonOrganicRanker:
@@ -74,29 +60,28 @@ class AmazonOrganicRanker:
         self.driver: Optional[uc.Chrome] = None
 
     def _init_driver(self, proxy: Optional[str] = None):
-            if self.driver:
-                self.close()
-    
-            options = uc.ChromeOptions()
-            options.add_argument("--headless=new")
-            options.add_argument("--window-size=1920,1080")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--lang=en-US,en;q=0.9")
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument(
-                "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            )
-    
-            # Apply Proxy if available
-            if proxy:
-                options.add_argument(f"--proxy-server={proxy}")
-    
-            # Remove fixed version_main=150 as it crashes if Chrome auto-updates on CI
-            self.driver = uc.Chrome(options=options)
-            logger.info("Undetected Chrome Browser successfully initialized.")
+        if self.driver:
+            self.close()
+
+        options = uc.ChromeOptions()
+        options.add_argument("--headless=new")
+        options.add_argument("--window-size=1920,1080")
+        options.add_argument("--no-sandbox")
+        options.add_argument("--disable-dev-shm-usage")
+        options.add_argument("--disable-gpu")
+        options.add_argument("--lang=en-US,en;q=0.9")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        )
+
+        if proxy:
+            options.add_argument(f"--proxy-server={proxy}")
+
+        self.driver = uc.Chrome(options=options)
+        logger.info("Undetected Chrome Browser successfully initialized.")
+
     def close(self):
         if self.driver:
             try:
@@ -109,7 +94,7 @@ class AmazonOrganicRanker:
     def _check_for_bot_detection(self) -> bool:
         if not self.driver:
             return False
-        
+
         page_source = self.driver.page_source.lower()
         title = self.driver.title.lower()
 
@@ -138,7 +123,6 @@ class AmazonOrganicRanker:
                     time.sleep(random.uniform(5.0, 8.0))
                     continue
 
-                # Safely try setting ZIP code without breaking scraper if modal fails
                 try:
                     location_btn = WebDriverWait(self.driver, 7).until(
                         EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
@@ -150,11 +134,11 @@ class AmazonOrganicRanker:
                         EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
                     )
                     zip_input.clear()
-                    
+
                     for char in str(self.zip_code):
                         zip_input.send_keys(char)
                         time.sleep(random.uniform(0.08, 0.18))
-                        
+
                     time.sleep(random.uniform(0.8, 1.5))
                     zip_input.send_keys(Keys.ENTER)
                     time.sleep(random.uniform(2.0, 3.0))
@@ -232,7 +216,7 @@ class AmazonOrganicRanker:
 
         return False
 
-    def search_and_rank(self, query: TargetQuery) -> RankResult:
+    def fetch_organic_rank(self, query: TargetQuery) -> Optional[int]:
         if not self.driver:
             self._init_driver()
             self.update_and_verify_zip()
@@ -261,14 +245,12 @@ class AmazonOrganicRanker:
                 logger.warning("Bot block detected during keyword search. Restarting driver session...")
                 self._init_driver()
                 self.update_and_verify_zip()
-                return self._build_empty_result(query, cumulative_organic_count)
+                return None
 
             self._scroll_entire_page()
 
             soup = BeautifulSoup(self.driver.page_source, 'html.parser')
             result_items = soup.select("div[data-component-type='s-search-result']")
-
-            page_organic_position = 0
 
             for item in result_items:
                 if self._is_non_organic_placement(item):
@@ -289,7 +271,6 @@ class AmazonOrganicRanker:
                 if not asin or len(asin) != 10:
                     continue
 
-                page_organic_position += 1
                 cumulative_organic_count += 1
 
                 title_el = (
@@ -302,40 +283,13 @@ class AmazonOrganicRanker:
                 title = title_el.get_text(strip=True) if title_el else "N/A"
 
                 if self._is_brand_match(query.target_brand, title, item):
-                    return RankResult(
-                        timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-                        keyword=query.keyword,
-                        zip_code=self.zip_code or "N/A",
-                        brand_name=query.target_brand,
-                        asin=asin,
-                        product_title=title,
-                        page_number=page_num,
-                        position_on_page=page_organic_position,
-                        global_organic_rank=cumulative_organic_count,
-                        manual_rank=query.manual_rank,
-                        total_listings_scanned=cumulative_organic_count
-                    )
+                    return cumulative_organic_count
 
             next_btn = soup.select_one("a.s-pagination-next")
             if not next_btn or "s-pagination-disabled" in next_btn.get('class', []):
                 break
 
-        return self._build_empty_result(query, cumulative_organic_count)
-
-    def _build_empty_result(self, query: TargetQuery, total_scanned: int = 0) -> RankResult:
-        return RankResult(
-            timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-            keyword=query.keyword,
-            zip_code=self.zip_code or "N/A",
-            brand_name=query.target_brand,
-            asin="NOT_FOUND",
-            product_title="N/A",
-            page_number=-1,
-            position_on_page=-1,
-            global_organic_rank=-1,
-            manual_rank=query.manual_rank,
-            total_listings_scanned=total_scanned
-        )
+        return None
 
 
 def get_robust_gspread_client(json_key_path: str):
@@ -358,11 +312,10 @@ def get_robust_gspread_client(json_key_path: str):
     return client
 
 
-def fetch_keywords_and_sync_results(
+def process_rank_db_sheet(
     json_key_path: str,
-    spreadsheet_name: str,
-    input_sheet_name: str,
-    output_sheet_name: str,
+    spreadsheet_id_or_name: str,
+    target_sheet_name: str,
     ranker: AmazonOrganicRanker,
     batch_size: int = 20,
     batch_delay_seconds: float = 15.0,
@@ -378,55 +331,66 @@ def fetch_keywords_and_sync_results(
             return
 
     client = get_robust_gspread_client(json_key_path)
-    sheet = client.open(spreadsheet_name)
+    
+    # Open sheet either by ID or by Key/Name
+    try:
+        if len(spreadsheet_id_or_name) > 30 and "/" not in spreadsheet_id_or_name:
+            sheet = client.open_by_key(spreadsheet_id_or_name)
+        else:
+            sheet = client.open(spreadsheet_id_or_name)
+    except Exception as e:
+        logger.error(f"Failed to open Google Spreadsheet: {str(e)}")
+        return
 
     try:
-        input_worksheet = sheet.worksheet(input_sheet_name)
+        worksheet = sheet.worksheet(target_sheet_name)
     except gspread.WorksheetNotFound:
-        logger.error(f"Sheet '{input_sheet_name}' not found!")
+        logger.error(f"Sheet '{target_sheet_name}' not found!")
         return
 
-    rows = input_worksheet.get_all_values()
-    if not rows or len(rows) < 2:
-        logger.error("No data found in input sheet.")
+    all_rows = worksheet.get_all_values()
+    if not all_rows:
+        logger.error("No data found in sheet.")
         return
 
-    headers_in = [str(h).strip().lower() for h in rows[0]]
-    kw_idx = next((i for i, h in enumerate(headers_in) if "keyword" in h), -1)
-    brand_idx = next((i for i, h in enumerate(headers_in) if "brand" in h), -1)
-    manual_idx = next((i for i, h in enumerate(headers_in) if "manual" in h), -1)
+    headers = all_rows[0]
+    
+    # Detect Keyword and Brand columns dynamically
+    kw_col_idx = next((i for i, h in enumerate(headers) if "keyword" in h.lower()), -1)
+    brand_col_idx = next((i for i, h in enumerate(headers) if "brand" in h.lower()), -1)
 
-    targets = []
-    for row in rows[1:]:
-        kw = row[kw_idx].strip() if kw_idx != -1 and len(row) > kw_idx else ""
-        brand = row[brand_idx].strip() if brand_idx != -1 and len(row) > brand_idx else ""
-        m_rank = row[manual_idx].strip() if manual_idx != -1 and len(row) > manual_idx else "N/A"
+    if kw_col_idx == -1 or brand_col_idx == -1:
+        logger.error("Could not locate 'Keyword' or 'Brand' header columns in the sheet.")
+        return
 
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # Identify or create date column (e.g., Column 9, 10, 11...)
+    date_col_idx = -1
+    for idx, h in enumerate(headers):
+        if today_str in h:
+            date_col_idx = idx
+            break
+
+    if date_col_idx == -1:
+        date_col_idx = len(headers)
+        worksheet.update_cell(1, date_col_idx + 1, today_str)
+        logger.info(f"Added new date header column '{today_str}' at Column Index {date_col_idx + 1}.")
+
+    targets: List[TargetQuery] = []
+    for r_idx, row in enumerate(all_rows[1:], start=2):
+        kw = row[kw_col_idx].strip() if len(row) > kw_col_idx else ""
+        brand = row[brand_col_idx].strip() if len(row) > brand_col_idx else ""
         if kw and brand:
-            targets.append(TargetQuery(keyword=kw, target_brand=brand, manual_rank=m_rank))
-
-    if not targets:
-        logger.warning("[!] No valid keywords found in input sheet.")
-        return
+            targets.append(TargetQuery(row_idx=r_idx, keyword=kw, target_brand=brand))
 
     total_keywords = len(targets)
-    logger.info(f"Loaded {total_keywords} valid targets for processing.")
-
-    try:
-        output_worksheet = sheet.worksheet(output_sheet_name)
-    except gspread.WorksheetNotFound:
-        output_worksheet = sheet.add_worksheet(title=output_sheet_name, rows=str(total_keywords + 100), cols="10")
-
-    output_worksheet.clear()
-    
-    headers = [
-        "Timestamp", "Keyword", "Brand Name", "ASIN", 
-        "Page Number", "Global Organic Rank", "Manual Rank", "Total Listings Scanned"
-    ]
-    output_worksheet.append_row(headers)
+    logger.info(f"Found {total_keywords} keywords to rank for today's column ({today_str}).")
 
     ranker._init_driver()
     ranker.update_and_verify_zip()
+
+    cell_updates = []
 
     for idx, target in enumerate(targets, 1):
         if idx > 1 and idx % driver_restart_interval == 0:
@@ -434,47 +398,42 @@ def fetch_keywords_and_sync_results(
             ranker._init_driver()
             ranker.update_and_verify_zip()
 
-        res = ranker.search_and_rank(target)
-
-        output_worksheet.append_row([
-            res.timestamp,
-            res.keyword,
-            res.brand_name,
-            res.asin,
-            res.page_number,
-            res.global_organic_rank,
-            res.manual_rank,
-            res.total_listings_scanned
-        ])
+        rank_found = ranker.fetch_organic_rank(target)
+        rank_val = rank_found if rank_found is not None else "NOT_FOUND"
 
         logger.info(
-            f"[{idx}/{total_keywords}] Live Saved -> Keyword: '{target.keyword}' | "
-            f"Brand: '{target.target_brand}' | ASIN: {res.asin} | Rank: {res.global_organic_rank} | "
-            f"Scanned: {res.total_listings_scanned}"
+            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Organic Rank: {rank_val}"
         )
 
-        del res
+        cell_updates.append(gspread.Cell(target.row_idx, date_col_idx + 1, rank_val))
+
         gc.collect()
 
         if idx % batch_size == 0 and idx < total_keywords:
+            logger.info("Batch completed. Updating Google Sheets in bulk...")
+            worksheet.update_cells(cell_updates)
+            cell_updates.clear()
+            
             delay = batch_delay_seconds + random.uniform(2.0, 5.0)
-            logger.info(f"--- Batch Completed ({idx}/{total_keywords}). Pausing for {round(delay, 1)}s... ---")
+            logger.info(f"--- Pausing for {round(delay, 1)}s... ---")
             time.sleep(delay)
         else:
             time.sleep(random.uniform(3.0, 5.0))
 
+    if cell_updates:
+        worksheet.update_cells(cell_updates)
+
     ranker.close()
-    logger.info("Processing complete!")
+    logger.info("Rank update task successfully completed!")
 
 
 if __name__ == "__main__":
     CREDENTIALS_JSON = "gcp_key.json"
-    SPREADSHEET_NAME = "Keywords_Research"
-    INPUT_SHEET_NAME = "Keywords_input"
-    OUTPUT_SHEET_NAME = "Keywords_output"
+    SPREADSHEET_ID_OR_NAME = "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg"
+    TARGET_SHEET_NAME = "rank_db"
 
     ZIP_CODE = "12345"
-    MAX_PAGE_LIMIT = 5
+    MAX_PAGE_LIMIT = 8
 
     ranker = AmazonOrganicRanker(
         marketplace_url="https://www.amazon.com",
@@ -482,13 +441,12 @@ if __name__ == "__main__":
         max_pages=MAX_PAGE_LIMIT
     )
 
-    fetch_keywords_and_sync_results(
+    process_rank_db_sheet(
         json_key_path=CREDENTIALS_JSON,
-        spreadsheet_name=SPREADSHEET_NAME,
-        input_sheet_name=INPUT_SHEET_NAME,
-        output_sheet_name=OUTPUT_SHEET_NAME,
+        spreadsheet_id_or_name=SPREADSHEET_ID_OR_NAME,
+        target_sheet_name=TARGET_SHEET_NAME,
         ranker=ranker,
-        batch_size=20,
-        batch_delay_seconds=15.0,
-        driver_restart_interval=30
+        batch_size=10,
+        batch_delay_seconds=10.0,
+        driver_restart_interval=20
     )
