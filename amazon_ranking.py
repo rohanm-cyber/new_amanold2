@@ -400,9 +400,16 @@ def process_rank_db_sheet(
 
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
 
-    date_col_idx = len(headers)
-    worksheet.update_cell(1, date_col_idx + 1, now_str)
-    logger.info(f"Created new timestamp header column '{now_str}' at Column Index {date_col_idx + 1}.")
+    # Target column index (1-based for gspread)
+    target_col_idx = len(headers) + 1
+
+    # Grid Expansion Check: Add column if target exceeds current sheet limits
+    if target_col_idx > worksheet.col_count:
+        logger.info(f"Expanding grid: Adding 1 new column (Current total: {worksheet.col_count})...")
+        worksheet.add_cols(1)
+
+    worksheet.update_cell(1, target_col_idx, now_str)
+    logger.info(f"Created new timestamp header column '{now_str}' at Column Index {target_col_idx}.")
 
     targets: List[TargetQuery] = []
     for r_idx, row in enumerate(all_rows[1:], start=2):
@@ -411,47 +418,46 @@ def process_rank_db_sheet(
         if kw and brand:
             targets.append(TargetQuery(row_idx=r_idx, keyword=kw, target_brand=brand))
 
-    total_keywords = len(targets)
-    logger.info(f"Found {total_keywords} keywords to rank.")
+        total_keywords = len(targets)
+        logger.info(f"Found {total_keywords} keywords to rank.")
+    
+        ranker._init_driver()
+        ranker.update_and_verify_zip()
+    
+        cell_updates = []
 
-    ranker._init_driver()
-    ranker.update_and_verify_zip()
+        for idx, target in enumerate(targets, 1):
+            if idx > 1 and idx % driver_restart_interval == 0:
+                logger.info(f"=== Periodic Proxy & Driver Rotation (Keyword {idx}/{total_keywords}) ===")
+                ranker._init_driver()
+                ranker.update_and_verify_zip()
+    
+            rank_found = ranker.fetch_organic_rank(target)
+            rank_val = rank_found if rank_found is not None else "NOT_FOUND"
+    
+            logger.info(
+                f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Rank: {rank_val}"
+            )
+    
+            cell_updates.append(gspread.Cell(target.row_idx, target_col_idx, rank_val))
+            gc.collect()
 
-    cell_updates = []
-
-    for idx, target in enumerate(targets, 1):
-        if idx > 1 and idx % driver_restart_interval == 0:
-            logger.info(f"=== Periodic Proxy & Driver Rotation (Keyword {idx}/{total_keywords}) ===")
-            ranker._init_driver()
-            ranker.update_and_verify_zip()
-
-        rank_found = ranker.fetch_organic_rank(target)
-        rank_val = rank_found if rank_found is not None else "NOT_FOUND"
-
-        logger.info(
-            f"[{idx}/{total_keywords}] Keyword: '{target.keyword}' | Brand: '{target.target_brand}' | Rank: {rank_val}"
-        )
-
-        cell_updates.append(gspread.Cell(target.row_idx, date_col_idx + 1, rank_val))
-        gc.collect()
-
-        if idx % batch_size == 0 and idx < total_keywords:
-            logger.info("Batch completed. Updating Google Sheets in bulk...")
+            if idx % batch_size == 0 and idx < total_keywords:
+                logger.info("Batch completed. Updating Google Sheets in bulk...")
+                worksheet.update_cells(cell_updates)
+                cell_updates.clear()
+    
+                delay = batch_delay_seconds + random.uniform(2.0, 5.0)
+                logger.info(f"--- Pausing for {round(delay, 1)}s... ---")
+                time.sleep(delay)
+            else:
+                time.sleep(random.uniform(3.0, 5.0))
+    
+        if cell_updates:
             worksheet.update_cells(cell_updates)
-            cell_updates.clear()
-
-            delay = batch_delay_seconds + random.uniform(2.0, 5.0)
-            logger.info(f"--- Pausing for {round(delay, 1)}s... ---")
-            time.sleep(delay)
-        else:
-            time.sleep(random.uniform(3.0, 5.0))
-
-    if cell_updates:
-        worksheet.update_cells(cell_updates)
-
-    ranker.close()
-    logger.info("Rank update task successfully completed!")
-
+    
+        ranker.close()
+        logger.info("Rank update task successfully completed!")
 
 if __name__ == "__main__":
     CREDENTIALS_JSON = "gcp_key.json"
