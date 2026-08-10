@@ -200,7 +200,7 @@ class AmazonOrganicRanker:
         else:
             self.current_proxy = None
 
-        self.driver = webdriver.Chrome(options=options)
+        self.driver = webdriver.Chrome(options=options,chrome=150)
         self.driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 
         logger.info("Chrome driver initialized.")
