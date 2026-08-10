@@ -88,7 +88,7 @@ class AmazonOrganicRanker:
         else:
             logger.info("Initializing browser without proxy (Direct IP).")
 
-        self.driver = uc.Chrome(options=options)
+        self.driver = uc.Chrome(options=options, version_main=150)
         logger.info("Undetected Chrome Browser successfully initialized.")
 
     def close(self):
