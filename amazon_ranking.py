@@ -74,18 +74,18 @@ class AmazonOrganicRanker:
         self.driver: Optional[uc.Chrome] = None
 
     def _get_free_proxies(self):
-    logger.info("Free Proxy has been downloaded!")
-    url = "https://proxyscrape.com"
-    try:
-        response = requests.get(url, timeout=10)
-        if response.status_code == 200:
-            proxies = response.text.strip().split('\r\n')
-            if len(proxies) < 5:
-                proxies = requests.get("https://githubusercontent.com", timeout=10).text.strip().split('\n')
-            return proxies
-    except Exception as e:
-        logger.error(f"Proxy error to Download: {e}")
-    return []
+        logger.info("Free Proxy has been downloaded!")
+        url = "https://proxyscrape.com"
+        try:
+            response = requests.get(url, timeout=10)
+            if response.status_code == 200:
+                proxies = response.text.strip().split('\r\n')
+                if len(proxies) < 5:
+                    proxies = requests.get("https://githubusercontent.com", timeout=10).text.strip().split('\n')
+                return proxies
+        except Exception as e:
+            logger.error(f"Proxy error to Download: {e}")
+        return []
 
     def _init_driver(self):
         if self.driver:
