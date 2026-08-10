@@ -124,62 +124,62 @@ class AmazonOrganicRanker:
         if any(indicator in page_source or indicator in title for indicator in block_indicators):
             logger.warning(f"[!] Amazon Block Page Detected ('{self.driver.title}') on Proxy: {self.current_proxy or 'Direct IP'}")
             return True
-            
+
         return False
 
     def update_and_verify_zip(self) -> bool:
-            if not self.zip_code:
-                return True
-    
-            for attempt in range(1, self.max_retries + 1):
-                logger.info(f"Setting ZIP Code to '{self.zip_code}' (Attempt {attempt}/{self.max_retries})...")
+        if not self.zip_code:
+            return True
+
+        for attempt in range(1, self.max_retries + 1):
+            logger.info(f"Setting ZIP Code to '{self.zip_code}' (Attempt {attempt}/{self.max_retries})...")
+            try:
+                self.driver.get(self.marketplace_url)
+                time.sleep(random.uniform(3.0, 5.0))
+
+                if self._check_for_bot_detection():
+                    logger.info("Rotating proxy due to bot detection during ZIP update...")
+                    self._init_driver()
+                    continue
+
                 try:
-                    self.driver.get(self.marketplace_url)
-                    time.sleep(random.uniform(3.0, 5.0))
-    
-                    if self._check_for_bot_detection():
-                        logger.info("Rotating proxy due to bot detection during ZIP update...")
-                        self._init_driver()
-                        continue
-    
-                    try:
-                        location_btn = WebDriverWait(self.driver, 7).until(
-                            EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
-                        )
-                        location_btn.click()
-                        time.sleep(random.uniform(1.5, 2.5))
-    
-                        zip_input = WebDriverWait(self.driver, 7).until(
-                            EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
-                        )
-                        zip_input.clear()
-    
-                        for char in str(self.zip_code):
-                            zip_input.send_keys(char)
-                            time.sleep(random.uniform(0.08, 0.18))
-    
-                        time.sleep(random.uniform(0.8, 1.5))
-                        zip_input.send_keys(Keys.ENTER)
-                        time.sleep(random.uniform(2.0, 3.0))
-    
-                        apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
-                        if apply_btn:
-                            self.driver.execute_script("arguments[0].click();", apply_btn[0])
-                            time.sleep(random.uniform(2.0, 3.5))
-    
-                        self.driver.refresh()
-                        time.sleep(random.uniform(2.5, 4.0))
-                        logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
-                        return True
-    
-                    except Exception as zip_e:
-                        logger.warning(f"ZIP modal interaction skipped: {str(zip_e)}. Continuing search directly...")
-                        return True
-    
-                except Exception as e:
-                    logger.warning(f"ZIP Update Attempt {attempt} Failed: {str(e)}")
-    
-            return False
+                    location_btn = WebDriverWait(self.driver, 7).until(
+                        EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
+                    )
+                    location_btn.click()
+                    time.sleep(random.uniform(1.5, 2.5))
+
+                    zip_input = WebDriverWait(self.driver, 7).until(
+                        EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
+                    )
+                    zip_input.clear()
+
+                    for char in str(self.zip_code):
+                        zip_input.send_keys(char)
+                        time.sleep(random.uniform(0.08, 0.18))
+
+                    time.sleep(random.uniform(0.8, 1.5))
+                    zip_input.send_keys(Keys.ENTER)
+                    time.sleep(random.uniform(2.0, 3.0))
+
+                    apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
+                    if apply_btn:
+                        self.driver.execute_script("arguments[0].click();", apply_btn[0])
+                        time.sleep(random.uniform(2.0, 3.5))
+
+                    self.driver.refresh()
+                    time.sleep(random.uniform(2.5, 4.0))
+                    logger.info(f"ZIP Code successfully applied: '{self.zip_code}'.")
+                    return True
+
+                except Exception as zip_e:
+                    logger.warning(f"ZIP modal interaction skipped: {str(zip_e)}. Continuing search directly...")
+                    return True
+
+            except Exception as e:
+                logger.warning(f"ZIP Update Attempt {attempt} Failed: {str(e)}")
+
+        return False
 
     def _scroll_entire_page(self):
         for _ in range(4):
@@ -240,7 +240,7 @@ class AmazonOrganicRanker:
 
         return False
 
-   def fetch_organic_rank(self, query: TargetQuery, max_keyword_retries: int = 3) -> Optional[int]:
+    def fetch_organic_rank(self, query: TargetQuery, max_keyword_retries: int = 3) -> Optional[int]:
         for attempt in range(1, max_keyword_retries + 1):
             if not self.driver:
                 self._init_driver()
@@ -329,6 +329,7 @@ class AmazonOrganicRanker:
         logger.error(f"Failed to fetch keyword '{query.keyword}' after {max_keyword_retries} retries due to persistent blocks.")
         return None
 
+
 def get_robust_gspread_client(json_key_path: str):
     session = Session()
     retries = Retry(
@@ -368,7 +369,7 @@ def process_rank_db_sheet(
             return
 
     client = get_robust_gspread_client(json_key_path)
-    
+
     try:
         if len(spreadsheet_id_or_name) > 30 and "/" not in spreadsheet_id_or_name:
             sheet = client.open_by_key(spreadsheet_id_or_name)
@@ -398,7 +399,7 @@ def process_rank_db_sheet(
         return
 
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
-    
+
     date_col_idx = len(headers)
     worksheet.update_cell(1, date_col_idx + 1, now_str)
     logger.info(f"Created new timestamp header column '{now_str}' at Column Index {date_col_idx + 1}.")
@@ -438,7 +439,7 @@ def process_rank_db_sheet(
             logger.info("Batch completed. Updating Google Sheets in bulk...")
             worksheet.update_cells(cell_updates)
             cell_updates.clear()
-            
+
             delay = batch_delay_seconds + random.uniform(2.0, 5.0)
             logger.info(f"--- Pausing for {round(delay, 1)}s... ---")
             time.sleep(delay)
@@ -460,10 +461,9 @@ if __name__ == "__main__":
     ZIP_CODE = "12345"
     MAX_PAGE_LIMIT = 8
 
-    # Proxy list load karna (Aap yahan apne proxies ki list de sakte hain ya file se read kar sakte hain)
-    # Format: "http://username:password@ip:port" ya "http://ip:port"
+    # Proxy list load karna
     PROXY_POOL = []
-    
+
     if os.path.exists("proxies.txt"):
         with open("proxies.txt", "r") as f:
             PROXY_POOL = [line.strip() for line in f if line.strip()]
