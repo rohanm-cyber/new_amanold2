@@ -67,6 +67,7 @@ class AmazonOrganicRanker:
         if self.driver:
             self.close()
 
+        # 1. Chrome Options initialize aur configure karein
         options = uc.ChromeOptions()
         options.add_argument("--headless=new")
         options.add_argument("--window-size=1920,1080")
@@ -80,7 +81,7 @@ class AmazonOrganicRanker:
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         )
 
-        # Rotate Proxy if available
+        # 2. Proxy options add karein (agar available ho)
         self.current_proxy = self._get_random_proxy()
         if self.current_proxy:
             options.add_argument(f"--proxy-server={self.current_proxy}")
@@ -88,9 +89,10 @@ class AmazonOrganicRanker:
         else:
             logger.info("Initializing browser without proxy (Direct IP).")
 
-        self.driver = uc.Chrome(options=options)
+        # 3. options aur version_main pass karke driver start karein
+        # System ke Chrome version 150 ke mutabiq version_main=150 rakha hai
+        self.driver = uc.Chrome(options=options, version_main=150)
         logger.info("Undetected Chrome Browser successfully initialized.")
-
     def close(self):
         if self.driver:
             try:
