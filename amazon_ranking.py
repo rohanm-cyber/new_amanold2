@@ -46,7 +46,7 @@ class StealthAmazonRanker:
     def __init__(
         self,
         marketplace_url: str = "https://www.amazon.com",
-        zip_code: Optional[str] = "12345",
+        zip_code: Optional[str] = "12345",  # Strictly set to 12345
         max_pages: int = 5,
         max_retries: int = 3,
         proxy_list: Optional[List[str]] = None
@@ -69,19 +69,17 @@ class StealthAmazonRanker:
         return random.choice(self.proxy_list) if self.proxy_list else None
 
     def _init_stealth_driver(self):
-        """Initializes Chrome with Advanced Stealth Overrides."""
+        """Initializes Chrome with Auto Chrome Version Detection and Stealth Overrides."""
         if self.driver:
             self.close()
 
         options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument(f"user-agent={random.choice(self.user_agents)}")
         
-        # Viewport randomization to defeat fingerprinting
         width = random.choice([1366, 1440, 1536, 1920])
         height = random.choice([768, 900, 864, 1080])
         options.add_argument(f"--window-size={width},{height}")
@@ -91,9 +89,8 @@ class StealthAmazonRanker:
             options.add_argument(f"--proxy-server={proxy}")
             logger.info(f"Connecting via Proxy: {proxy}")
 
-        self.driver = uc.Chrome(options=options,version_main=150)
+        self.driver = uc.Chrome(options=options)
         
-        # Anti-Bot JS Injection
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
@@ -136,52 +133,188 @@ class StealthAmazonRanker:
         return False
 
     def update_zip_code(self) -> bool:
-        """Sets target ZIP code with human-like interactions."""
+        """Forces Amazon location strictly to US ZIP code 12345 from Indian IP using Cookies, API, and UI Fallbacks."""
         if not self.zip_code or not self.driver:
             return True
 
         try:
+            logger.info(f"Setting location to US ZIP Code: {self.zip_code}")
+            
+            # Step 1: Base Load & Cookie Preset
             self.driver.get(self.marketplace_url)
-            time.sleep(random.uniform(3.0, 5.0))
+            time.sleep(random.uniform(2.5, 3.5))
 
             if self._detect_and_handle_block():
                 return False
 
+            # Inject USD and US Locale Cookies directly into session
             try:
-                loc_btn = WebDriverWait(self.driver, 6).until(
-                    EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
-                )
-                loc_btn.click()
-                time.sleep(random.uniform(1.5, 2.5))
+                self.driver.add_cookie({"name": "i18n-prefs", "value": "USD", "domain": ".amazon.com"})
+                self.driver.add_cookie({"name": "lc-main", "value": "en_US", "domain": ".amazon.com"})
+            except Exception as e:
+                logger.debug(f"Cookie injection warning: {str(e)}")
 
-                zip_input = WebDriverWait(self.driver, 6).until(
-                    EC.visibility_of_element_located((By.ID, "GLUXZipUpdateInput"))
-                )
-                zip_input.clear()
+            # Check if header is already set to US/12345
+            try:
+                curr_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
+                if str(self.zip_code) in curr_loc or "New York" in curr_loc or "US" in curr_loc:
+                    logger.info(f"[SUCCESS] Location verified in header: '{curr_loc}'")
+                    return True
+            except Exception:
+                pass
 
+            # Step 2: Direct Amazon Internal Glow API Address Injection
+            logger.info("Injecting ZIP payload via Amazon Glow Endpoint...")
+            api_js = f"""
+            var callback = arguments[arguments.length - 1];
+            var csrfToken = "";
+            try {{
+                var inputs = document.querySelectorAll("input[name='anti-csrftoken-a2z']");
+                if (inputs.length > 0) csrfToken = inputs[0].value;
+            }} catch(e) {{}}
+
+            var params = new URLSearchParams();
+            params.append('locationType', 'LOCATION_INPUT');
+            params.append('zipCode', '{self.zip_code}');
+            params.append('storeContext', 'generic');
+            params.append('deviceType', 'web');
+            params.append('pageType', 'Gateway');
+            params.append('actionSource', 'glow');
+
+            fetch('/portal-migration/hz/glow/address-change?actionSource=glow', {{
+                method: 'POST',
+                headers: {{
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'x-requested-with': 'XMLHttpRequest',
+                    'anti-csrftoken-a2z': csrfToken
+                }},
+                body: params.toString()
+            }}).then(res => res.json())
+              .then(data => callback({{success: true, data: data}}))
+              .catch(err => callback({{success: false, error: err.toString()}}));
+            """
+
+            try:
+                api_res = self.driver.execute_async_script(api_js)
+                if api_res and api_res.get("success"):
+                    self.driver.refresh()
+                    time.sleep(3.0)
+                    new_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
+                    if str(self.zip_code) in new_loc or "US" in new_loc:
+                        logger.info(f"[SUCCESS] ZIP Code applied via API: '{new_loc}'")
+                        return True
+            except Exception as e:
+                logger.warning(f"API injection failed, proceeding to UI fallback: {str(e)}")
+
+            # Step 3: UI Automation Fallback (For handling Country Dropdown vs ZIP Input)
+            logger.info("Triggering Location UI Modal...")
+            loc_btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
+            )
+            self.driver.execute_script("arguments[0].click();", loc_btn)
+            time.sleep(2.5)
+
+            # Check if "Enter a US zip code" link exists (Common on Indian IPs)
+            try:
+                change_zip_link = self.driver.find_elements(By.ID, "GLUXChangePostalCodeLink")
+                if change_zip_link and change_zip_link[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", change_zip_link[0])
+                    time.sleep(1.5)
+            except Exception:
+                pass
+
+            # Search for ZIP Input field
+            zip_input = None
+            zip_selectors = [
+                "input#GLUXZipUpdateInput",
+                "input[id*='GLUXZipUpdateInput']",
+                "#GLUXZipUpdateInput_0"
+            ]
+            for sel in zip_selectors:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                for el in elements:
+                    if el.is_displayed():
+                        zip_input = el
+                        break
+                if zip_input:
+                    break
+
+            # If ZIP input is not visible, change Country Dropdown to United States first
+            if not zip_input:
+                logger.info("ZIP Input not visible. Changing Country Dropdown to 'United States'...")
+                dropdown_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXCountryList_dropdown, #GLUXCountryList span.a-button-text")
+                if dropdown_btn and dropdown_btn[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", dropdown_btn[0])
+                    time.sleep(1.5)
+
+                    us_options = self.driver.find_elements(By.XPATH, "//a[contains(text(), 'United States')] | //a[contains(@data-value, 'US')]")
+                    if us_options:
+                        self.driver.execute_script("arguments[0].click();", us_options[0])
+                        time.sleep(1.5)
+
+                    done_btn = self.driver.find_elements(By.CSS_SELECTOR, "button[name='glowDoneButton'], #GLUXCountryUpdate input")
+                    if done_btn and done_btn[0].is_displayed():
+                        self.driver.execute_script("arguments[0].click();", done_btn[0])
+                        time.sleep(3.0)
+
+                    # Re-open location modal after switching country
+                    loc_btn = self.driver.find_element(By.ID, "nav-global-location-slot")
+                    self.driver.execute_script("arguments[0].click();", loc_btn)
+                    time.sleep(2.0)
+
+                    # Re-evaluate ZIP input
+                    for sel in zip_selectors:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                        for el in elements:
+                            if el.is_displayed():
+                                zip_input = el
+                                break
+                        if zip_input:
+                            break
+
+            # Enter ZIP 12345 with JavaScript Events
+            if zip_input:
+                self.driver.execute_script("arguments[0].value = '';", zip_input)
                 for char in str(self.zip_code):
                     zip_input.send_keys(char)
-                    time.sleep(random.uniform(0.05, 0.15))
+                    time.sleep(0.08)
 
-                zip_input.send_keys(Keys.ENTER)
-                time.sleep(random.uniform(2.0, 3.0))
+                # Dispatch events so Amazon's React app activates the Apply button
+                self.driver.execute_script("""
+                    var el = arguments[0];
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                """, zip_input)
+                time.sleep(1.0)
 
-                apply_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit']")
-                if apply_btn:
-                    self.driver.execute_script("arguments[0].click();", apply_btn[0])
-                    time.sleep(random.uniform(2.0, 3.0))
+                # Click Apply/Submit
+                apply_btns = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit'], #GLUXZipUpdate-announce, input[aria-labelledby='GLUXZipUpdate-announce']")
+                if apply_btns and apply_btns[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", apply_btns[0])
+                else:
+                    zip_input.send_keys(Keys.ENTER)
+
+                time.sleep(3.0)
+
+                # Click Continue/Done Modal confirmation button
+                confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, "button[name='glowDoneButton'], #GLUXConfirmClose, .a-popover-footer #GLUXConfirmClose-announce")
+                if confirm_btns and confirm_btns[0].is_displayed():
+                    self.driver.execute_script("arguments[0].click();", confirm_btns[0])
+                    time.sleep(2.0)
 
                 self.driver.refresh()
-                time.sleep(random.uniform(2.5, 4.0))
-                logger.info(f"ZIP Code set to '{self.zip_code}'.")
+                time.sleep(3.5)
+
+                final_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
+                logger.info(f"[SUCCESS] Final Amazon Header Location: '{final_loc}'")
                 return True
-            except Exception:
-                logger.warning("ZIP modal missed, continuing search...")
-                return True
-        except Exception as e:
-            logger.error(f"ZIP code update failed: {str(e)}")
+
+            logger.error("Failed to find or input ZIP code in UI.")
             return False
 
+        except Exception as e:
+            logger.error(f"ZIP code update error: {str(e)}")
+            return False
     def _human_scroll(self):
         """Simulates natural user scrolling to load lazy-loaded elements."""
         for _ in range(random.randint(3, 5)):
@@ -191,12 +324,15 @@ class StealthAmazonRanker:
 
     @staticmethod
     def _is_sponsored_item(element) -> bool:
-        """Filters out Sponsored Ads, Carousels, and Video Widgets."""
+        """Filters out Sponsored Ads, Carousels, and Video Widgets using updated selectors."""
         comp_type = element.get('data-component-type', '')
-        if comp_type in ['s-ads-creative-desktop', 'sp-sponsored-result', 's-shopping-ad-widget', 's-video-widget']:
+        if comp_type in [
+            's-ads-creative-desktop', 'sp-sponsored-result',
+            's-shopping-ad-widget', 's-video-widget', 's-brand-story-widget'
+        ]:
             return True
 
-        if element.select('.s-sponsored-label-info-icon, .puis-sponsored-label-text, .s-label-popover-default'):
+        if element.select('.s-sponsored-label-info-icon, .puis-sponsored-label-text, .s-label-popover-default, [aria-label*="Sponsored"]'):
             return True
 
         return False
@@ -251,7 +387,7 @@ class StealthAmazonRanker:
                     block_occurred = True
                     break
 
-                time.sleep(random.uniform(3.0, 5.5))
+                time.sleep(random.uniform(3.0, 5.0))
 
                 if self._detect_and_handle_block():
                     logger.warning(f"Block detected on Attempt {attempt}. Renewing browser session...")
@@ -282,7 +418,7 @@ class StealthAmazonRanker:
                     title_text = title_el.get_text(strip=True) if title_el else ""
 
                     if self._match_brand_or_asin(query.target_brand, title_text, item):
-                        logger.info(f"[SUCCESS] ASIN: {asin} | Organic Rank: {organic_counter}")
+                        logger.info(f"[SUCCESS] ASIN/Brand Match: '{query.target_brand}' | Organic Rank: {organic_counter}")
                         return organic_counter
 
                 next_page = soup.select_one("a.s-pagination-next")
@@ -290,9 +426,26 @@ class StealthAmazonRanker:
                     break
 
             if not block_occurred:
-                return None  # Not found within max pages
+                return None
 
         return None
+
+
+def safe_update_cell(worksheet, row: int, col: int, value: str, max_retries: int = 4):
+    """Saves cell data to Google Sheets with rate-limit protection."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            worksheet.update_cell(row, col, value)
+            return True
+        except Exception as e:
+            if "429" in str(e) or "QUOTA_EXCEEDED" in str(e):
+                wait_time = attempt * 5
+                logger.warning(f"Google Sheets Rate Limit hit. Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+            else:
+                logger.error(f"Failed to update row {row}, col {col}: {str(e)}")
+                break
+    return False
 
 
 def get_gspread_client(json_key_path: str):
@@ -326,7 +479,7 @@ def process_rankings(
         sheet = client.open_by_key(spreadsheet_id) if len(spreadsheet_id) > 30 else client.open(spreadsheet_id)
         worksheet = sheet.worksheet(sheet_name)
     except Exception as e:
-        logger.error(f"Google Sheet error: {str(e)}")
+        logger.error(f"Google Sheet connection error: {str(e)}")
         return
 
     all_rows = worksheet.get_all_values()
@@ -334,24 +487,30 @@ def process_rankings(
         logger.error("Empty sheet!")
         return
 
-    headers = all_rows[0]
+    headers = list(all_rows[0])
+    while headers and not headers[-1].strip():
+        headers.pop()
+
+    if not headers:
+        logger.error("No valid headers found in row 1!")
+        return
+
     kw_col = next((i for i, h in enumerate(headers) if "keyword" in h.lower()), -1)
     brand_col = next((i for i, h in enumerate(headers) if "brand" in h.lower()), -1)
 
     if kw_col == -1 or brand_col == -1:
-        logger.error("Sheet must contain 'Keyword' and 'Brand' headers.")
+        logger.error("Sheet missing required 'Keyword' and 'Brand' headers.")
         return
 
     now_str = datetime.now().strftime("%Y-%m-%d %I:%M %p")
     target_col_idx = len(headers) + 1
 
-    # AUTO EXPAND GRID IF LIMIT EXCEEDED
     if target_col_idx > worksheet.col_count:
-        logger.info(f"Expanding Google Sheet grid (+1 Col)...")
+        logger.info("Expanding Google Sheet grid (+1 Column)...")
         worksheet.add_cols(1)
 
-    worksheet.update_cell(1, target_col_idx, now_str)
-    logger.info(f"Created timestamp column '{now_str}' at Index {target_col_idx}")
+    safe_update_cell(worksheet, 1, target_col_idx, now_str)
+    logger.info(f"Created timestamp column '{now_str}' at Column Index {target_col_idx}")
 
     targets: List[TargetQuery] = []
     for r_idx, row in enumerate(all_rows[1:], start=2):
@@ -363,33 +522,30 @@ def process_rankings(
     total = len(targets)
     logger.info(f"Total Targets Loaded: {total}")
 
-    ranker._init_stealth_driver()
-    ranker.update_zip_code()
+    try:
+        ranker._init_stealth_driver()
+        ranker.update_zip_code()
 
-    for idx, t in enumerate(targets, 1):
-        # Refresh browser periodically to drop tracking cookies
-        if idx > 1 and idx % 10 == 0:
-            logger.info("Performing periodic driver refresh...")
-            ranker._init_stealth_driver()
-            ranker.update_zip_code()
+        for idx, t in enumerate(targets, 1):
+            if idx > 1 and idx % 10 == 0:
+                logger.info("Performing periodic session refresh...")
+                ranker._init_stealth_driver()
+                ranker.update_zip_code()
 
-        rank = ranker.fetch_rank(t)
-        rank_str = str(rank) if rank is not None else "NOT_FOUND"
+            rank = ranker.fetch_rank(t)
+            rank_str = str(rank) if rank is not None else "NOT_FOUND"
 
-        logger.info(f"[{idx}/{total}] Target: '{t.keyword}' | Brand: '{t.target_brand}' | Rank: {rank_str}")
+            logger.info(f"[{idx}/{total}] Target: '{t.keyword}' | Brand: '{t.target_brand}' | Rank: {rank_str}")
 
-        # LIVE DIRECT WRITE TO SHEETS (Zero Data Loss)
-        try:
-            worksheet.update_cell(t.row_idx, target_col_idx, rank_str)
-            logger.info(f"--> Saved to Sheet (Row {t.row_idx}, Col {target_col_idx})")
-        except Exception as e:
-            logger.error(f"Sheets update failed on Row {t.row_idx}: {str(e)}")
+            if safe_update_cell(worksheet, t.row_idx, target_col_idx, rank_str):
+                logger.info(f"--> Saved to Sheet (Row {t.row_idx}, Col {target_col_idx})")
 
-        gc.collect()
-        time.sleep(random.uniform(3.0, 6.0))
+            gc.collect()
+            time.sleep(random.uniform(3.0, 5.0))
 
-    ranker.close()
-    logger.info("All keywords successfully processed!")
+    finally:
+        ranker.close()
+        logger.info("Ranking process completed cleanly.")
 
 
 if __name__ == "__main__":
@@ -397,15 +553,14 @@ if __name__ == "__main__":
     SPREADSHEET_ID = "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg"
     SHEET_NAME = "rank_db"
 
-    # Optional: Load proxies from proxies.txt if available
     proxies = []
     if os.path.exists("proxies.txt"):
-        with open("proxies.txt", "r") as f:
+        with open("proxies.txt", "r", encoding="utf-8") as f:
             proxies = [line.strip() for line in f if line.strip()]
 
     stealth_ranker = StealthAmazonRanker(
         marketplace_url="https://www.amazon.com",
-        zip_code="12345",
+        zip_code="12345",  # Strictly set to 12345
         max_pages=5,
         max_retries=3,
         proxy_list=proxies
