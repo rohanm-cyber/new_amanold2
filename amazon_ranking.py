@@ -47,7 +47,7 @@ class StealthAmazonRanker:
         self,
         marketplace_url: str = "https://www.amazon.com",
         zip_code: Optional[str] = "12345",  # Strictly set to 12345
-        max_pages: int = 5,
+        max_pages: int = 8,
         max_retries: int = 3,
         proxy_list: Optional[List[str]] = None
     ):
