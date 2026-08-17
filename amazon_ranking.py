@@ -133,7 +133,7 @@ class StealthAmazonRanker:
             options.add_argument(f"--proxy-server={proxy}")
             logger.info(f"Connecting via Proxy: {proxy}")
 
-        chrome_major = 140  # Pinned for now, per explicit request
+        chrome_major = 150  # Pinned for now, per explicit request
         logger.info(f"Using pinned Chrome major version: {chrome_major}")
         self.driver = uc.Chrome(options=options, version_main=chrome_major)
         
