@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import re
-import subprocess
 import sys
 import time
 import urllib.parse
@@ -14,6 +13,7 @@ from typing import List, Optional, Set
 import gspread
 from bs4 import BeautifulSoup
 from google.oauth2.service_account import Credentials
+from requests import Session
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -40,7 +40,7 @@ class TargetQuery:
     row_idx: int
     keyword: str
     target_brand: str
-    asin: Optional[str] = None
+    target_asin: Optional[str] = None  # Added optional Target ASIN field
 
 
 class StealthAmazonRanker:
@@ -69,48 +69,6 @@ class StealthAmazonRanker:
     def _get_random_proxy(self) -> Optional[str]:
         return random.choice(self.proxy_list) if self.proxy_list else None
 
-    @staticmethod
-    def _detect_installed_chrome_major_version() -> Optional[int]:
-        """Detects the installed Chrome/Chromium major version so undetected_chromedriver
-        fetches a chromedriver build that actually matches the local browser, instead of
-        guessing the latest available build and crashing on a version mismatch."""
-        candidates = []
-        try:
-            exe = uc.find_chrome_executable()
-            if exe:
-                candidates.append(exe)
-        except Exception:
-            pass
-        candidates += ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
-
-        for exe in candidates:
-            try:
-                if os.name == "nt":
-                    # --version on Windows binaries often doesn't print to stdout reliably;
-                    # query via WMIC as a fallback, else try direct invocation first.
-                    try:
-                        out = subprocess.check_output(
-                            [exe, "--version"], stderr=subprocess.STDOUT, timeout=5
-                        ).decode(errors="ignore")
-                    except Exception:
-                        out = subprocess.check_output(
-                            ["wmic", "datafile", "where",
-                             f"name='{exe.replace(chr(92), chr(92)*2)}'",
-                             "get", "Version", "/value"],
-                            stderr=subprocess.STDOUT, timeout=5
-                        ).decode(errors="ignore")
-                else:
-                    out = subprocess.check_output(
-                        [exe, "--version"], stderr=subprocess.STDOUT, timeout=5
-                    ).decode(errors="ignore")
-
-                match = re.search(r"(\d+)\.\d+\.\d+\.\d+", out)
-                if match:
-                    return int(match.group(1))
-            except Exception:
-                continue
-        return None
-
     def _init_stealth_driver(self):
         """Initializes Chrome with Auto Chrome Version Detection and Stealth Overrides."""
         if self.driver:
@@ -133,9 +91,7 @@ class StealthAmazonRanker:
             options.add_argument(f"--proxy-server={proxy}")
             logger.info(f"Connecting via Proxy: {proxy}")
 
-        chrome_major = 150  # Pinned for now, per explicit request
-        logger.info(f"Using pinned Chrome major version: {chrome_major}")
-        self.driver = uc.Chrome(options=options, version_main=chrome_major)
+        self.driver = uc.Chrome(options=options, version_main=150)
         
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -143,7 +99,7 @@ class StealthAmazonRanker:
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
             window.chrome = { runtime: {} };
         """
-        self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {"source": stealth_js})
+        self.driver.execute_script(stealth_js)
         logger.info("Stealth Chrome Driver successfully loaded.")
 
     def close(self):
@@ -169,7 +125,7 @@ class StealthAmazonRanker:
             "robot check", "enter the characters you see below",
             "type the characters you see in this image",
             "sorry, we just need to make sure you're not a robot",
-            "503 service unavailable", "aws waf"
+            "503 service unavailable", "aws waf", "api error"
         ]
 
         if any(signal in page_text or signal in title for signal in block_signals):
@@ -203,7 +159,7 @@ class StealthAmazonRanker:
             # Check if header is already set to US/12345
             try:
                 curr_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
-                if str(self.zip_code) in curr_loc:
+                if str(self.zip_code) in curr_loc or "New York" in curr_loc or "US" in curr_loc:
                     logger.info(f"[SUCCESS] Location verified in header: '{curr_loc}'")
                     return True
             except Exception:
@@ -246,7 +202,7 @@ class StealthAmazonRanker:
                     self.driver.refresh()
                     time.sleep(3.0)
                     new_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
-                    if str(self.zip_code) in new_loc:
+                    if str(self.zip_code) in new_loc or "US" in new_loc:
                         logger.info(f"[SUCCESS] ZIP Code applied via API: '{new_loc}'")
                         return True
             except Exception as e:
@@ -361,6 +317,7 @@ class StealthAmazonRanker:
         except Exception as e:
             logger.error(f"ZIP code update error: {str(e)}")
             return False
+
     def _human_scroll(self):
         """Simulates natural user scrolling to load lazy-loaded elements."""
         for _ in range(random.randint(3, 5)):
@@ -384,13 +341,21 @@ class StealthAmazonRanker:
         return False
 
     @staticmethod
-    def _match_brand_or_asin(target: str, title: str, item_soup) -> bool:
-        """Matches Target Brand or Exact ASIN against current listing."""
-        if not target:
+    def _match_brand_or_asin(target_brand: str, title: str, item_soup, target_asin: Optional[str] = None) -> bool:
+        """Matches Target ASIN first (if provided), then falls back to Target Brand matching."""
+        item_asin = item_soup.get('data-asin', '').strip().upper()
+
+        # Step 1: Target ASIN Matching Fallback Priority
+        if target_asin and target_asin.strip():
+            if item_asin == target_asin.strip().upper():
+                logger.info(f"Matched by Target ASIN: {item_asin}")
+                return True
+
+        # Step 2: Target Brand Matching (Original Logic)
+        if not target_brand:
             return False
 
-        target_str = target.strip()
-        item_asin = item_soup.get('data-asin', '').strip().upper()
+        target_str = target_brand.strip()
 
         if target_str.upper() == item_asin:
             return True
@@ -407,52 +372,8 @@ class StealthAmazonRanker:
 
         return False
 
-    def _verify_asin_live(self, asin: str) -> bool:
-        """Fallback check used when a keyword scan finds no match: search Amazon
-        directly by ASIN to confirm the listing is still live/discoverable at all,
-        independent of whether it ranks for the given keyword."""
-        if not asin or not self.driver:
-            return False
-
-        try:
-            asin_clean = asin.strip().upper()
-            url = f"{self.marketplace_url}/s?k={urllib.parse.quote_plus(asin_clean)}"
-            self.driver.get(url)
-            time.sleep(random.uniform(2.5, 4.0))
-
-            if self._detect_and_handle_block():
-                logger.warning(f"Block detected during ASIN verification for '{asin_clean}'.")
-                return False
-
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
-            items = soup.select("div[data-component-type='s-search-result']")
-            if not items:
-                items = soup.select("div.s-result-item[data-asin]")
-
-            for item in items:
-                if item.get('data-asin', '').strip().upper() == asin_clean:
-                    return True
-
-            return False
-        except Exception as e:
-            logger.warning(f"ASIN verification error for '{asin}': {str(e)}")
-            return False
-
-    def _resolve_not_found(self, query: TargetQuery) -> tuple:
-        """Called after a full keyword scan completes without a match. If the row
-        has an ASIN, falls back to a direct ASIN search so the sheet can tell apart
-        'not ranking for this keyword' from 'ASIN not discoverable / possibly delisted'."""
-        if query.asin:
-            logger.info(f"Keyword scan found nothing for '{query.keyword}'. Verifying ASIN '{query.asin}' directly...")
-            if self._verify_asin_live(query.asin):
-                return None, "NOT_FOUND_ASIN_LIVE"
-            return None, "NOT_FOUND_ASIN_MISSING"
-        return None, "NOT_FOUND"
-
-    def fetch_rank(self, query: TargetQuery) -> tuple:
-        """Fetches organic rank with auto-retry and driver renewal on blocks.
-        Returns (rank, status): rank is None when not found, and status explains
-        why — including an ASIN-based fallback check via _resolve_not_found."""
+    def fetch_rank(self, query: TargetQuery) -> Optional[int]:
+        """Fetches organic rank with auto-retry and driver renewal on blocks."""
         for attempt in range(1, self.max_retries + 1):
             if not self.driver:
                 self._init_stealth_driver()
@@ -507,22 +428,18 @@ class StealthAmazonRanker:
                     title_el = item.select_one("h2 a span") or item.select_one("h2 span")
                     title_text = title_el.get_text(strip=True) if title_el else ""
 
-                    if self._match_brand_or_asin(query.target_brand, title_text, item):
-                        logger.info(f"[SUCCESS] ASIN/Brand Match: '{query.target_brand}' | Organic Rank: {organic_counter}")
-                        return organic_counter, "FOUND"
+                    if self._match_brand_or_asin(query.target_brand, title_text, item, target_asin=query.target_asin):
+                        logger.info(f"[SUCCESS] Target Match: Brand='{query.target_brand}', ASIN='{query.target_asin}' | Organic Rank: {organic_counter}")
+                        return organic_counter
 
                 next_page = soup.select_one("a.s-pagination-next")
                 if not next_page or "s-pagination-disabled" in next_page.get('class', []):
                     break
 
             if not block_occurred:
-                return self._resolve_not_found(query)
+                return None
 
-            cooldown = attempt * random.uniform(8.0, 12.0)
-            logger.info(f"Cooling down {cooldown:.1f}s before retry attempt {attempt + 1}...")
-            time.sleep(cooldown)
-
-        return self._resolve_not_found(query)
+        return None
 
 
 def safe_update_cell(worksheet, row: int, col: int, value: str, max_retries: int = 4):
@@ -543,19 +460,17 @@ def safe_update_cell(worksheet, row: int, col: int, value: str, max_retries: int
 
 
 def get_gspread_client(json_key_path: str):
+    session = Session()
+    retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
     scope = [
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive"
     ]
     creds = Credentials.from_service_account_file(json_key_path, scopes=scope)
     client = gspread.Client(auth=creds)
-
-    # Mount retry adapter onto the client's own AuthorizedSession instead of
-    # replacing it — a plain requests.Session() has no OAuth credentials
-    # attached, which was causing every Sheets API call to fail auth.
-    # In gspread 6.x the session lives under client.http_client.session.
-    retries = Retry(total=5, backoff_factor=2, status_forcelist=[429, 500, 502, 503, 504])
-    client.http_client.session.mount("https://", HTTPAdapter(max_retries=retries))
+    client.session = session
     return client
 
 
@@ -593,7 +508,7 @@ def process_rankings(
 
     kw_col = next((i for i, h in enumerate(headers) if "keyword" in h.lower()), -1)
     brand_col = next((i for i, h in enumerate(headers) if "brand" in h.lower()), -1)
-    asin_col = next((i for i, h in enumerate(headers) if "asin" in h.lower()), -1)
+    asin_col = next((i for i, h in enumerate(headers) if "asin" in h.lower()), -1)  # Detect optional ASIN column
 
     if kw_col == -1 or brand_col == -1:
         logger.error("Sheet missing required 'Keyword' and 'Brand' headers.")
@@ -613,9 +528,9 @@ def process_rankings(
     for r_idx, row in enumerate(all_rows[1:], start=2):
         kw = row[kw_col].strip() if len(row) > kw_col else ""
         brand = row[brand_col].strip() if len(row) > brand_col else ""
-        asin = row[asin_col].strip() if asin_col != -1 and len(row) > asin_col else ""
+        asin = row[asin_col].strip() if (asin_col != -1 and len(row) > asin_col) else None
         if kw and brand:
-            targets.append(TargetQuery(row_idx=r_idx, keyword=kw, target_brand=brand, asin=asin or None))
+            targets.append(TargetQuery(row_idx=r_idx, keyword=kw, target_brand=brand, target_asin=asin))
 
     total = len(targets)
     logger.info(f"Total Targets Loaded: {total}")
@@ -625,22 +540,18 @@ def process_rankings(
         ranker.update_zip_code()
 
         for idx, t in enumerate(targets, 1):
-            try:
-                if idx > 1 and idx % 10 == 0:
-                    logger.info("Performing periodic session refresh...")
-                    ranker._init_stealth_driver()
-                    ranker.update_zip_code()
+            if idx > 1 and idx % 10 == 0:
+                logger.info("Performing periodic session refresh...")
+                ranker._init_stealth_driver()
+                ranker.update_zip_code()
 
-                rank, status = ranker.fetch_rank(t)
-                rank_str = str(rank) if rank is not None else status
+            rank = ranker.fetch_rank(t)
+            rank_str = str(rank) if rank is not None else "NOT_FOUND"
 
-                logger.info(f"[{idx}/{total}] Target: '{t.keyword}' | Brand: '{t.target_brand}' | Rank: {rank_str}")
+            logger.info(f"[{idx}/{total}] Target: '{t.keyword}' | Brand: '{t.target_brand}' | ASIN: '{t.target_asin}' | Rank: {rank_str}")
 
-                if safe_update_cell(worksheet, t.row_idx, target_col_idx, rank_str):
-                    logger.info(f"--> Saved to Sheet (Row {t.row_idx}, Col {target_col_idx})")
-            except Exception as e:
-                logger.error(f"[{idx}/{total}] Unhandled error on '{t.keyword}': {str(e)}. Skipping to next keyword.")
-                safe_update_cell(worksheet, t.row_idx, target_col_idx, "SCAN_ERROR")
+            if safe_update_cell(worksheet, t.row_idx, target_col_idx, rank_str):
+                logger.info(f"--> Saved to Sheet (Row {t.row_idx}, Col {target_col_idx})")
 
             gc.collect()
             time.sleep(random.uniform(3.0, 5.0))
@@ -651,7 +562,7 @@ def process_rankings(
 
 
 if __name__ == "__main__":
-    CREDENTIALS_JSON = "gcp_key.json"
+    CREDENTIALS_JSON = r"C:\Users\Rohan\Documents\Docs\WORKSPACE\WORKSPACE\gen-lang-client-0598815756-11b746f33e83.json"
     SPREADSHEET_ID = "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg"
     SHEET_NAME = "rank_db"
 
