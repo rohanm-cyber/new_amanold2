@@ -562,7 +562,7 @@ def process_rankings(
 
 
 if __name__ == "__main__":
-    CREDENTIALS_JSON = r"C:\Users\Rohan\Documents\Docs\WORKSPACE\WORKSPACE\gen-lang-client-0598815756-11b746f33e83.json"
+    CREDENTIALS_JSON ="gcp_key.json"
     SPREADSHEET_ID = "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg"
     SHEET_NAME = "rank_db"
 
