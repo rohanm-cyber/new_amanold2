@@ -68,39 +68,103 @@ class StealthAmazonRanker:
 
     def _get_random_proxy(self) -> Optional[str]:
         return random.choice(self.proxy_list) if self.proxy_list else None
-
     def _init_stealth_driver(self):
-        """Initializes Chrome with Auto Chrome Version Detection and Stealth Overrides."""
-        if self.driver:
+        """Initialize a stable Chrome session."""
+    
+        # Close any existing driver before creating a new one
+        if self.driver is not None:
             self.close()
-
+    
         options = uc.ChromeOptions()
+    
+        # GitHub Actions / Linux stability
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
+        options.add_argument("--disable-software-rasterizer")
+    
+        # Keep browser automation configuration consistent
         options.add_argument("--disable-blink-features=AutomationControlled")
+    
+        # Use one consistent browser profile/session configuration
         options.add_argument(f"user-agent={random.choice(self.user_agents)}")
-        
-        width = random.choice([1366, 1440, 1536, 1920])
-        height = random.choice([768, 900, 864, 1080])
-        options.add_argument(f"--window-size={width},{height}")
-
+    
+        options.add_argument("--window-size=1366,900")
+    
+        # Proxy
         proxy = self._get_random_proxy()
+    
         if proxy:
             options.add_argument(f"--proxy-server={proxy}")
-            logger.info(f"Connecting via Proxy: {proxy}")
-
-        self.driver = uc.Chrome(options=options)
-        
-        stealth_js = """
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            window.chrome = { runtime: {} };
-        """
-        self.driver.execute_script(stealth_js)
-        logger.info("Stealth Chrome Driver successfully loaded.")
+            logger.info("Residential proxy enabled.")
+        else:
+            logger.info("No proxy configured. Direct connection.")
+    
+        try:
+            # Do NOT force version_main=150.
+            # Let UC use the Chrome version available on the runner.
+            self.driver = uc.Chrome(options=options)
+    
+            # Give Chrome a moment to become ready
+            self.driver.set_page_load_timeout(60)
+            self.driver.set_script_timeout(30)
+    
+            logger.info( f"Chrome started successfully. ",f"Browser: {self.driver.capabilities.get('browserVersion', 'unknown')}")
+    
+            # Apply stealth modifications after browser startup
+            stealth_js = """
+            (() => {
+                try {
+                    Object.defineProperty(
+                        Navigator.prototype,
+                        'webdriver',
+                        {
+                            get: () => undefined,
+                            configurable: true
+                        }
+                    );
+                } catch (e) {}
+    
+                try {
+                    Object.defineProperty(
+                        Navigator.prototype,
+                        'languages',
+                        {
+                            get: () => ['en-US', 'en'],
+                            configurable: true
+                        }
+                    );
+                } catch (e) {}
+    
+                try {
+                    Object.defineProperty(
+                        Navigator.prototype,
+                        'plugins',
+                        {
+                            get: () => [1, 2, 3, 4, 5],
+                            configurable: true
+                        }
+                    );
+                } catch (e) {}
+            })();
+            """
+    
+            self.driver.execute_script(stealth_js)
+    
+            logger.info("Chrome stealth initialization completed.")
+    
+            return True
+    
+        except Exception as e:
+            logger.error(
+                f"Chrome initialization failed: {type(e).__name__}: {e}"
+            )
+    
+            # Make sure a half-created driver does not remain alive
+            self.close()
+    
+            return False
 
     def close(self):
         if self.driver:
