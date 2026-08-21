@@ -91,7 +91,7 @@ class StealthAmazonRanker:
             options.add_argument(f"--proxy-server={proxy}")
             logger.info(f"Connecting via Proxy: {proxy}")
 
-        self.driver = uc.Chrome(options=options, version_main=150)
+        self.driver = uc.Chrome(options=options)
         
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -540,10 +540,10 @@ def process_rankings(
         ranker.update_zip_code()
 
         for idx, t in enumerate(targets, 1):
-            if idx > 1 and idx % 10 == 0:
-                logger.info("Performing periodic session refresh...")
-                ranker._init_stealth_driver()
-                ranker.update_zip_code()
+            #if idx > 1 and idx % 10 == 0:
+                #logger.info("Performing periodic session refresh...")
+                #ranker._init_stealth_driver()
+                #ranker.update_zip_code()
 
             rank = ranker.fetch_rank(t)
             rank_str = str(rank) if rank is not None else "NOT_FOUND"
