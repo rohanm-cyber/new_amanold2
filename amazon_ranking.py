@@ -91,7 +91,7 @@ class StealthAmazonRanker:
             options.add_argument(f"--proxy-server={proxy}")
             logger.info(f"Connecting via Proxy: {proxy}")
 
-        self.driver = uc.Chrome(options=options, version_main=150)
+        self.driver = uc.Chrome(options=options, version_main=152)
         
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
