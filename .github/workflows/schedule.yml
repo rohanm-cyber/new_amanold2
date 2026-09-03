@@ -8,13 +8,11 @@ jobs:
   run-scraper:
     runs-on: ubuntu-latest
     
-    # SYSTEM PROXY ENVIRONMENT VARIABLES ADD KIYE HAIN
+    # CASE-SENSITIVE DUPLICATES REMOVED
     env:
-      PROXY_SERVER: ${{ secrets.PROXY_SERVER_SECRET }}
+      PROXY_SERVER_SECRET: ${{ secrets.PROXY_SERVER_SECRET }}
       HTTP_PROXY: ${{ secrets.PROXY_SERVER_SECRET }}
       HTTPS_PROXY: ${{ secrets.PROXY_SERVER_SECRET }}
-      http_proxy: ${{ secrets.PROXY_SERVER_SECRET }}
-      https_proxy: ${{ secrets.PROXY_SERVER_SECRET }}
 
     steps:
       - name: Checkout Code
@@ -45,11 +43,6 @@ jobs:
           GCP_KEY: ${{ secrets.GCP_SA_KEY }}
         run: |
           echo "$GCP_KEY" > gcp_key.json
-
-      - name: Verify Proxy IP (Debug Step)
-        run: |
-          echo "Checking IP address via Decodo Proxy..."
-          curl --proxy "${{ secrets.PROXY_SERVER_SECRET }}" https://ipinfo.io/json || echo "Curl proxy failed"
 
       - name: Run Ranker Script
         env:
