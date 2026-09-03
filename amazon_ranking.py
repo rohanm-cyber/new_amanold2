@@ -5,6 +5,7 @@ import random
 import re
 import sys
 import time
+import zipfile
 import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime
@@ -40,14 +41,14 @@ class TargetQuery:
     row_idx: int
     keyword: str
     target_brand: str
-    target_asin: Optional[str] = None  # Added optional Target ASIN field
+    target_asin: Optional[str] = None
 
 
 class StealthAmazonRanker:
     def __init__(
         self,
         marketplace_url: str = "https://www.amazon.com",
-        zip_code: Optional[str] = "12345",  # Strictly set to 12345
+        zip_code: Optional[str] = "12345",
         max_pages: int = 8,
         max_retries: int = 3,
         proxy_list: Optional[List[str]] = None
@@ -56,8 +57,16 @@ class StealthAmazonRanker:
         self.zip_code = zip_code
         self.max_pages = max_pages
         self.max_retries = max_retries
-        self.proxy_list = proxy_list or []
+        
+        # GitHub Secret ya parameter se Proxy fetch karna
+        env_proxy = os.getenv("PROXY_SERVER_SECRET")
+        if env_proxy:
+            self.proxy_list = [env_proxy.strip()]
+        else:
+            self.proxy_list = [p.strip() for p in proxy_list] if proxy_list else []
+            
         self.driver: Optional[uc.Chrome] = None
+        self.proxy_plugin_path: Optional[str] = None
 
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -65,6 +74,82 @@ class StealthAmazonRanker:
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         ]
+
+    def _create_proxy_extension(self, proxy_str: str) -> Optional[str]:
+        """Chrome Extension banata hai taaki Auth Proxies (User:Pass) Headless Chrome me kaam karein."""
+        try:
+            # Clean string
+            clean_proxy = proxy_str.replace("http://", "").replace("https://", "")
+            
+            if "@" in clean_proxy:
+                auth, host_port = clean_proxy.split("@")
+                user, password = auth.split(":")
+                host, port = host_port.split(":")
+            else:
+                return None  # No Auth required, default flag can be used
+
+            manifest_json = """
+            {
+                "version": "1.0.0",
+                "manifest_version": 2,
+                "name": "Chrome Proxy",
+                "permissions": [
+                    "proxy",
+                    "tabs",
+                    "unlimitedStorage",
+                    "storage",
+                    "<all_urls>",
+                    "webRequest",
+                    "webRequestBlocking"
+                ],
+                "background": {
+                    "scripts": ["background.js"]
+                },
+                "minimum_chrome_version":"22.0.0"
+            }
+            """
+
+            background_js = f"""
+            var config = {{
+                mode: "fixed_servers",
+                rules: {{
+                  singleProxy: {{
+                    scheme: "http",
+                    host: "{host}",
+                    port: parseInt({port})
+                  }},
+                  bypassList: ["localhost"]
+                }}
+              }};
+
+            chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
+
+            function callbackFn(details) {{
+                return {{
+                    authCredentials: {{
+                        username: "{user}",
+                        password: "{password}"
+                    }}
+                }};
+            }}
+
+            chrome.webRequest.onAuthRequired.addListener(
+                callbackFn,
+                {{urls: ["<all_urls>"]}},
+                ['blocking']
+            );
+            
+
+            plugin_file = 'proxy_auth_plugin.zip'
+            with zipfile.ZipFile(plugin_file, 'w') as zp:
+                zp.writestr("manifest.json", manifest_json)
+                zp.writestr("background.js", background_js)
+            
+            logger.info("Proxy Authentication Extension created successfully.")
+            return os.path.abspath(plugin_file)
+        except Exception as e:
+            logger.error(f"Error building proxy extension: {e}")
+            return None
 
     def _get_random_proxy(self) -> Optional[str]:
         return random.choice(self.proxy_list) if self.proxy_list else None
@@ -88,10 +173,26 @@ class StealthAmazonRanker:
 
         proxy = self._get_random_proxy()
         if proxy:
-            options.add_argument(f"--proxy-server={proxy}")
-            logger.info(f"Connecting via Proxy: {proxy}")
+            if "@" in proxy:
+                # Extension route for Auth proxies
+                self.proxy_plugin_path = self._create_proxy_extension(proxy)
+                if self.proxy_plugin_path:
+                    options.add_extension(self.proxy_plugin_path)
+                    logger.info(f"Loaded Auth Proxy via Extension.")
+            else:
+                # Direct IP:Port proxy
+                formatted_proxy = proxy if proxy.startswith(("http://", "https://")) else f"http://{proxy}"
+                options.add_argument(f"--proxy-server={formatted_proxy}")
+                logger.info(f"Connecting via Standard Proxy: {formatted_proxy}")
+        else:
+            logger.warning("[!] PROXY NOT FOUND! Running on Default GitHub IP.")
 
-        self.driver = uc.Chrome(options=options, version_main=151)
+        # Fixed: Removed hardcoded version_main=151 to prevent crash/fallback
+        try:
+            self.driver = uc.Chrome(options=options)
+        except Exception as e:
+            logger.warning(f"Default UC Launch failed, trying fallback: {e}")
+            self.driver = uc.Chrome(options=options, use_subprocess=True)
         
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
@@ -100,6 +201,16 @@ class StealthAmazonRanker:
             window.chrome = { runtime: {} };
         """
         self.driver.execute_script(stealth_js)
+        
+        # Verification: Log IP Address inside Browser
+        try:
+            self.driver.get("https://ipinfo.io/json")
+            time.sleep(2)
+            body_text = self.driver.find_element(By.TAG_NAME, 'body').text
+            logger.info(f"==== BROWSER IP DETAILS ====\n{body_text}\n============================")
+        except Exception as ip_err:
+            logger.warning(f"Could not verify Browser IP: {ip_err}")
+
         logger.info("Stealth Chrome Driver successfully loaded.")
 
     def close(self):
@@ -109,6 +220,13 @@ class StealthAmazonRanker:
             except Exception:
                 pass
             self.driver = None
+        
+        # Cleanup temporary proxy extension
+        if self.proxy_plugin_path and os.path.exists(self.proxy_plugin_path):
+            try:
+                os.remove(self.proxy_plugin_path)
+            except Exception:
+                pass
 
     def _detect_and_handle_block(self) -> bool:
         """Detects Captcha, AWS WAF, and Robot Check Pages."""
