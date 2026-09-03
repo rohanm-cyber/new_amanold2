@@ -1,10 +1,8 @@
 name: Run Amazon Organic Ranker
-
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 13,23 * * *'
-
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
@@ -22,6 +20,11 @@ jobs:
         with:
           chrome-version: stable
 
+      - name: Setup Xvfb (Virtual Display)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
+
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -33,17 +36,14 @@ jobs:
         run: |
           echo "$GCP_KEY" > gcp_key.json
 
-      - name: Create Proxies File
-        env:
-          PROXIES_DATA: ${{ secrets.PROXIES_LIST }}
-        run: |
-          echo "$PROXIES_DATA" > proxies.txt
-
       - name: Run Ranker Script
+        env:
+          PROXY_SERVER_SECRET: ${{ secrets.PROXY_SERVER_SECRET }}
+          GCP_KEY_PATH: gcp_key.json
         run: |
-          python amazon_ranking.py
+          xvfb-run --auto-servernum python amazon_ranking.py
 
       - name: Cleanup Sensitive Data
         if: always()
         run: |
-          rm -f gcp_key.json proxies.txt
+          rm -f gcp_key.json
