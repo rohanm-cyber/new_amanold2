@@ -98,7 +98,7 @@ class StealthAmazonRanker:
         }
     
 
-        background_js = f"""
+        background_js = f
         var config = {{
             mode: "fixed_servers",
             rules: {{
@@ -193,12 +193,12 @@ class StealthAmazonRanker:
             
             self.driver = uc.Chrome(options=fallback_options, version_main=151, use_subprocess=True)
 
-        stealth_js = """
+        stealth_js =
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
             Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
             window.chrome = { runtime: {} };
-        """
+    
         self.driver.execute_script(stealth_js)
         logger.info("Stealth Chrome Driver successfully loaded.")
         
