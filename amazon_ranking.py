@@ -265,7 +265,7 @@ class StealthAmazonRanker:
             except Exception:
                 pass
 
-            api_js = f"""
+            api_js = f
             var callback = arguments[arguments.length - 1];
             var csrfToken = "";
             try {{
@@ -292,7 +292,7 @@ class StealthAmazonRanker:
             }}).then(res => res.json())
               .then(data => callback({{success: true, data: data}}))
               .catch(err => callback({{success: false, error: err.toString()}}));
-            """
+        
 
             try:
                 api_res = self.driver.execute_async_script(api_js)
