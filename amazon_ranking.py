@@ -13,6 +13,7 @@ from typing import List, Optional, Set
 
 import gspread
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 from google.oauth2.service_account import Credentials
 from requests import Session
 from requests.adapters import HTTPAdapter
@@ -23,6 +24,9 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+# Load .env file
+load_dotenv()
 
 # Logging Setup
 logging.basicConfig(
@@ -51,22 +55,28 @@ class StealthAmazonRanker:
         zip_code: Optional[str] = "12345",
         max_pages: int = 8,
         max_retries: int = 3,
-        proxy_list: Optional[List[str]] = None
+        proxy_list: Optional[List[str]] = None,
+        decodo_host: Optional[str] = None,
+        decodo_port: Optional[str] = None,
+        decodo_user: Optional[str] = None,
+        decodo_pass: Optional[str] = None,
     ):
         self.marketplace_url = marketplace_url.rstrip('/')
         self.zip_code = zip_code
         self.max_pages = max_pages
         self.max_retries = max_retries
-        
-        # GitHub Secret ya parameter se Proxy fetch karna
-        env_proxy = os.getenv("PROXY_SERVER_SECRET")
-        if env_proxy:
-            self.proxy_list = [env_proxy.strip()]
-        else:
-            self.proxy_list = [p.strip() for p in proxy_list] if proxy_list else []
-            
+        self.proxy_list = proxy_list or []
         self.driver: Optional[uc.Chrome] = None
         self.proxy_plugin_path: Optional[str] = None
+
+        # Fetch Decodo Credentials from env or arguments
+        self.decodo_host = decodo_host or os.getenv("DECODO_HOST", "")
+        self.decodo_port = decodo_port or os.getenv("DECODO_PORT", "")
+        self.decodo_user = decodo_user or os.getenv("DECODO_USER", "")
+        self.decodo_pass = decodo_pass or os.getenv("DECODO_PASS", "")
+
+        # Fallback to GitHub Secret if full string provided
+        self.proxy_secret = os.getenv("PROXY_SERVER_SECRET", "")
 
         self.user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -75,125 +85,114 @@ class StealthAmazonRanker:
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         ]
 
-    def _create_proxy_extension(self, proxy_str: str) -> Optional[str]:
-        """Chrome Extension banata hai taaki Auth Proxies (User:Pass) Headless Chrome me kaam karein."""
-        try:
-            # Clean string
-            clean_proxy = proxy_str.replace("http://", "").replace("https://", "")
-            
-            if "@" in clean_proxy:
-                auth, host_port = clean_proxy.split("@")
-                user, password = auth.split(":")
-                host, port = host_port.split(":")
-            else:
-                return None  # No Auth required, default flag can be used
+    def _create_proxy_extension(self, host, port, user, password) -> str:
+        """Dynamically creates a Chrome Plugin to handle Decodo Proxy Authentication."""
+        manifest_json = 
+        {
+            "version": "1.0.0",
+            "manifest_version": 2,
+            "name": "Decodo Proxy Auth",
+            "permissions": ["proxy", "tabs", "unlimitedStorage", "storage", "<all_urls>", "webRequest", "webRequestBlocking"],
+            "background": {"scripts": ["background.js"]},
+            "minimum_chrome_version":"22.0.0"
+        }
+    
 
-            manifest_json = """
-            {
-                "version": "1.0.0",
-                "manifest_version": 2,
-                "name": "Chrome Proxy",
-                "permissions": [
-                    "proxy",
-                    "tabs",
-                    "unlimitedStorage",
-                    "storage",
-                    "<all_urls>",
-                    "webRequest",
-                    "webRequestBlocking"
-                ],
-                "background": {
-                    "scripts": ["background.js"]
-                },
-                "minimum_chrome_version":"22.0.0"
-            }
-            """
-
-            background_js = f"""
-            var config = {{
-                mode: "fixed_servers",
-                rules: {{
-                  singleProxy: {{
-                    scheme: "http",
-                    host: "{host}",
-                    port: parseInt({port})
-                  }},
-                  bypassList: ["localhost"]
-                }}
-              }};
-
-            chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
-
-            function callbackFn(details) {{
-                return {{
-                    authCredentials: {{
-                        username: "{user}",
-                        password: "{password}"
-                    }}
-                }};
+        background_js = f"""
+        var config = {{
+            mode: "fixed_servers",
+            rules: {{
+              singleProxy: {{
+                scheme: "http",
+                host: "{host}",
+                port: parseInt({port})
+              }},
+              bypassList: ["localhost"]
             }}
+          }};
 
-            chrome.webRequest.onAuthRequired.addListener(
-                callbackFn,
-                {{urls: ["<all_urls>"]}},
-                ['blocking']
-            );
-            
+        chrome.proxy.settings.set({{value: config, scope: "regular"}}, function() {{}});
 
-            plugin_file = 'proxy_auth_plugin.zip'
-            with zipfile.ZipFile(plugin_file, 'w') as zp:
-                zp.writestr("manifest.json", manifest_json)
-                zp.writestr("background.js", background_js)
-            
-            logger.info("Proxy Authentication Extension created successfully.")
-            return os.path.abspath(plugin_file)
-        except Exception as e:
-            logger.error(f"Error building proxy extension: {e}")
-            return None
+        function callbackFn(details) {{
+            return {{
+                authCredentials: {{
+                    username: "{user}",
+                    password: "{password}"
+                }}
+            }};
+        }}
 
-    def _get_random_proxy(self) -> Optional[str]:
-        return random.choice(self.proxy_list) if self.proxy_list else None
+        chrome.webRequest.onAuthRequired.addListener(
+            callbackFn,
+            {{urls: ["<all_urls>"]}},
+            ['blocking']
+        );
+        
+
+        plugin_file = 'decodo_proxy_plugin.zip'
+        with zipfile.ZipFile(plugin_file, 'w') as zp:
+            zp.writestr("manifest.json", manifest_json)
+            zp.writestr("background.js", background_js)
+        
+        return os.path.abspath(plugin_file)
 
     def _init_stealth_driver(self):
-        """Initializes Chrome with Auto Chrome Version Detection and Stealth Overrides."""
+        """Initializes a fresh Chrome instance with Decodo Proxy and Stealth settings."""
         if self.driver:
             self.close()
 
+        # ALWAYS CREATE A FRESH CHROME OPTIONS OBJECT TO PREVENT REUSE ERRORS
         options = uc.ChromeOptions()
+        
         options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--disable-blink-features=AutomationControlled")
         options.add_argument(f"user-agent={random.choice(self.user_agents)}")
-        
+
         width = random.choice([1366, 1440, 1536, 1920])
         height = random.choice([768, 900, 864, 1080])
         options.add_argument(f"--window-size={width},{height}")
 
-        proxy = self._get_random_proxy()
-        if proxy:
-            if "@" in proxy:
-                # Extension route for Auth proxies
-                self.proxy_plugin_path = self._create_proxy_extension(proxy)
-                if self.proxy_plugin_path:
-                    options.add_extension(self.proxy_plugin_path)
-                    logger.info(f"Loaded Auth Proxy via Extension.")
+        # Decodo Proxy (Option B) - Extension setup
+        if self.decodo_host and self.decodo_port and self.decodo_user and self.decodo_pass:
+            logger.info(f"Connecting via Decodo Proxy: {self.decodo_host}:{self.decodo_port}")
+            self.proxy_plugin_path = self._create_proxy_extension(
+                self.decodo_host, self.decodo_port, self.decodo_user, self.decodo_pass
+            )
+            options.add_extension(self.proxy_plugin_path)
+        elif self.proxy_secret:
+            clean_secret = self.proxy_secret.replace("http://", "").replace("https://", "")
+            if "@" in clean_secret:
+                auth, host_port = clean_secret.split("@")
+                user, password = auth.split(":")
+                host, port = host_port.split(":")
+                self.proxy_plugin_path = self._create_proxy_extension(host, port, user, password)
+                options.add_extension(self.proxy_plugin_path)
             else:
-                # Direct IP:Port proxy
-                formatted_proxy = proxy if proxy.startswith(("http://", "https://")) else f"http://{proxy}"
-                options.add_argument(f"--proxy-server={formatted_proxy}")
-                logger.info(f"Connecting via Standard Proxy: {formatted_proxy}")
+                options.add_argument(f"--proxy-server=http://{clean_secret}")
         else:
-            logger.warning("[!] PROXY NOT FOUND! Running on Default GitHub IP.")
+            logger.warning("[!] No Proxy Details Found in Environment!")
 
-        # Fixed: Removed hardcoded version_main=151 to prevent crash/fallback
+        # Initialize Browser Instance safely
+        # Force Undetected Chromedriver to use Version 151
         try:
-            self.driver = uc.Chrome(options=options)
+            self.driver = uc.Chrome(options=options, version_main=151)
         except Exception as e:
-            logger.warning(f"Default UC Launch failed, trying fallback: {e}")
-            self.driver = uc.Chrome(options=options, use_subprocess=True)
-        
+            logger.warning(f"Standard Chrome launch failed ({e}), attempting subprocess fallback...")
+            
+            # Re-instantiate fresh options for fallback attempt
+            fallback_options = uc.ChromeOptions()
+            fallback_options.add_argument("--headless=new")
+            fallback_options.add_argument("--no-sandbox")
+            fallback_options.add_argument("--disable-dev-shm-usage")
+            fallback_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
+            if self.proxy_plugin_path:
+                fallback_options.add_extension(self.proxy_plugin_path)
+            
+            self.driver = uc.Chrome(options=fallback_options, version_main=151, use_subprocess=True)
+
         stealth_js = """
             Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
             Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
@@ -201,18 +200,8 @@ class StealthAmazonRanker:
             window.chrome = { runtime: {} };
         """
         self.driver.execute_script(stealth_js)
-        
-        # Verification: Log IP Address inside Browser
-        try:
-            self.driver.get("https://ipinfo.io/json")
-            time.sleep(2)
-            body_text = self.driver.find_element(By.TAG_NAME, 'body').text
-            logger.info(f"==== BROWSER IP DETAILS ====\n{body_text}\n============================")
-        except Exception as ip_err:
-            logger.warning(f"Could not verify Browser IP: {ip_err}")
-
         logger.info("Stealth Chrome Driver successfully loaded.")
-
+        
     def close(self):
         if self.driver:
             try:
@@ -220,8 +209,7 @@ class StealthAmazonRanker:
             except Exception:
                 pass
             self.driver = None
-        
-        # Cleanup temporary proxy extension
+
         if self.proxy_plugin_path and os.path.exists(self.proxy_plugin_path):
             try:
                 os.remove(self.proxy_plugin_path)
@@ -229,7 +217,6 @@ class StealthAmazonRanker:
                 pass
 
     def _detect_and_handle_block(self) -> bool:
-        """Detects Captcha, AWS WAF, and Robot Check Pages."""
         if not self.driver:
             return True
 
@@ -253,28 +240,23 @@ class StealthAmazonRanker:
         return False
 
     def update_zip_code(self) -> bool:
-        """Forces Amazon location strictly to US ZIP code 12345 from Indian IP using Cookies, API, and UI Fallbacks."""
         if not self.zip_code or not self.driver:
             return True
 
         try:
             logger.info(f"Setting location to US ZIP Code: {self.zip_code}")
-            
-            # Step 1: Base Load & Cookie Preset
             self.driver.get(self.marketplace_url)
             time.sleep(random.uniform(2.5, 3.5))
 
             if self._detect_and_handle_block():
                 return False
 
-            # Inject USD and US Locale Cookies directly into session
             try:
                 self.driver.add_cookie({"name": "i18n-prefs", "value": "USD", "domain": ".amazon.com"})
                 self.driver.add_cookie({"name": "lc-main", "value": "en_US", "domain": ".amazon.com"})
             except Exception as e:
                 logger.debug(f"Cookie injection warning: {str(e)}")
 
-            # Check if header is already set to US/12345
             try:
                 curr_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
                 if str(self.zip_code) in curr_loc or "New York" in curr_loc or "US" in curr_loc:
@@ -283,8 +265,6 @@ class StealthAmazonRanker:
             except Exception:
                 pass
 
-            # Step 2: Direct Amazon Internal Glow API Address Injection
-            logger.info("Injecting ZIP payload via Amazon Glow Endpoint...")
             api_js = f"""
             var callback = arguments[arguments.length - 1];
             var csrfToken = "";
@@ -326,118 +306,13 @@ class StealthAmazonRanker:
             except Exception as e:
                 logger.warning(f"API injection failed, proceeding to UI fallback: {str(e)}")
 
-            # Step 3: UI Automation Fallback (For handling Country Dropdown vs ZIP Input)
-            logger.info("Triggering Location UI Modal...")
-            loc_btn = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.ID, "nav-global-location-slot"))
-            )
-            self.driver.execute_script("arguments[0].click();", loc_btn)
-            time.sleep(2.5)
-
-            # Check if "Enter a US zip code" link exists (Common on Indian IPs)
-            try:
-                change_zip_link = self.driver.find_elements(By.ID, "GLUXChangePostalCodeLink")
-                if change_zip_link and change_zip_link[0].is_displayed():
-                    self.driver.execute_script("arguments[0].click();", change_zip_link[0])
-                    time.sleep(1.5)
-            except Exception:
-                pass
-
-            # Search for ZIP Input field
-            zip_input = None
-            zip_selectors = [
-                "input#GLUXZipUpdateInput",
-                "input[id*='GLUXZipUpdateInput']",
-                "#GLUXZipUpdateInput_0"
-            ]
-            for sel in zip_selectors:
-                elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                for el in elements:
-                    if el.is_displayed():
-                        zip_input = el
-                        break
-                if zip_input:
-                    break
-
-            # If ZIP input is not visible, change Country Dropdown to United States first
-            if not zip_input:
-                logger.info("ZIP Input not visible. Changing Country Dropdown to 'United States'...")
-                dropdown_btn = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXCountryList_dropdown, #GLUXCountryList span.a-button-text")
-                if dropdown_btn and dropdown_btn[0].is_displayed():
-                    self.driver.execute_script("arguments[0].click();", dropdown_btn[0])
-                    time.sleep(1.5)
-
-                    us_options = self.driver.find_elements(By.XPATH, "//a[contains(text(), 'United States')] | //a[contains(@data-value, 'US')]")
-                    if us_options:
-                        self.driver.execute_script("arguments[0].click();", us_options[0])
-                        time.sleep(1.5)
-
-                    done_btn = self.driver.find_elements(By.CSS_SELECTOR, "button[name='glowDoneButton'], #GLUXCountryUpdate input")
-                    if done_btn and done_btn[0].is_displayed():
-                        self.driver.execute_script("arguments[0].click();", done_btn[0])
-                        time.sleep(3.0)
-
-                    # Re-open location modal after switching country
-                    loc_btn = self.driver.find_element(By.ID, "nav-global-location-slot")
-                    self.driver.execute_script("arguments[0].click();", loc_btn)
-                    time.sleep(2.0)
-
-                    # Re-evaluate ZIP input
-                    for sel in zip_selectors:
-                        elements = self.driver.find_elements(By.CSS_SELECTOR, sel)
-                        for el in elements:
-                            if el.is_displayed():
-                                zip_input = el
-                                break
-                        if zip_input:
-                            break
-
-            # Enter ZIP 12345 with JavaScript Events
-            if zip_input:
-                self.driver.execute_script("arguments[0].value = '';", zip_input)
-                for char in str(self.zip_code):
-                    zip_input.send_keys(char)
-                    time.sleep(0.08)
-
-                # Dispatch events so Amazon's React app activates the Apply button
-                self.driver.execute_script("""
-                    var el = arguments[0];
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                """, zip_input)
-                time.sleep(1.0)
-
-                # Click Apply/Submit
-                apply_btns = self.driver.find_elements(By.CSS_SELECTOR, "#GLUXZipUpdate input[type='submit'], #GLUXZipUpdate-announce, input[aria-labelledby='GLUXZipUpdate-announce']")
-                if apply_btns and apply_btns[0].is_displayed():
-                    self.driver.execute_script("arguments[0].click();", apply_btns[0])
-                else:
-                    zip_input.send_keys(Keys.ENTER)
-
-                time.sleep(3.0)
-
-                # Click Continue/Done Modal confirmation button
-                confirm_btns = self.driver.find_elements(By.CSS_SELECTOR, "button[name='glowDoneButton'], #GLUXConfirmClose, .a-popover-footer #GLUXConfirmClose-announce")
-                if confirm_btns and confirm_btns[0].is_displayed():
-                    self.driver.execute_script("arguments[0].click();", confirm_btns[0])
-                    time.sleep(2.0)
-
-                self.driver.refresh()
-                time.sleep(3.5)
-
-                final_loc = self.driver.find_element(By.ID, "glow-ingress-line2").text
-                logger.info(f"[SUCCESS] Final Amazon Header Location: '{final_loc}'")
-                return True
-
-            logger.error("Failed to find or input ZIP code in UI.")
-            return False
+            return True
 
         except Exception as e:
             logger.error(f"ZIP code update error: {str(e)}")
             return False
 
     def _human_scroll(self):
-        """Simulates natural user scrolling to load lazy-loaded elements."""
         for _ in range(random.randint(3, 5)):
             scroll_step = random.randint(400, 750)
             self.driver.execute_script(f"window.scrollBy(0, {scroll_step});")
@@ -445,7 +320,6 @@ class StealthAmazonRanker:
 
     @staticmethod
     def _is_sponsored_item(element) -> bool:
-        """Filters out Sponsored Ads, Carousels, and Video Widgets using updated selectors."""
         comp_type = element.get('data-component-type', '')
         if comp_type in [
             's-ads-creative-desktop', 'sp-sponsored-result',
@@ -460,21 +334,17 @@ class StealthAmazonRanker:
 
     @staticmethod
     def _match_brand_or_asin(target_brand: str, title: str, item_soup, target_asin: Optional[str] = None) -> bool:
-        """Matches Target ASIN first (if provided), then falls back to Target Brand matching."""
         item_asin = item_soup.get('data-asin', '').strip().upper()
 
-        # Step 1: Target ASIN Matching Fallback Priority
         if target_asin and target_asin.strip():
             if item_asin == target_asin.strip().upper():
                 logger.info(f"Matched by Target ASIN: {item_asin}")
                 return True
 
-        # Step 2: Target Brand Matching (Original Logic)
         if not target_brand:
             return False
 
         target_str = target_brand.strip()
-
         if target_str.upper() == item_asin:
             return True
 
@@ -491,7 +361,6 @@ class StealthAmazonRanker:
         return False
 
     def fetch_rank(self, query: TargetQuery) -> Optional[int]:
-        """Fetches organic rank with auto-retry and driver renewal on blocks."""
         for attempt in range(1, self.max_retries + 1):
             if not self.driver:
                 self._init_stealth_driver()
@@ -519,7 +388,7 @@ class StealthAmazonRanker:
                 time.sleep(random.uniform(3.0, 5.0))
 
                 if self._detect_and_handle_block():
-                    logger.warning(f"Block detected on Attempt {attempt}. Renewing browser session...")
+                    logger.warning(f"Block detected on Attempt {attempt}. Renewing session...")
                     self._init_stealth_driver()
                     self.update_zip_code()
                     block_occurred = True
@@ -561,7 +430,6 @@ class StealthAmazonRanker:
 
 
 def safe_update_cell(worksheet, row: int, col: int, value: str, max_retries: int = 4):
-    """Saves cell data to Google Sheets with rate-limit protection."""
     for attempt in range(1, max_retries + 1):
         try:
             worksheet.update_cell(row, col, value)
@@ -620,13 +488,9 @@ def process_rankings(
     while headers and not headers[-1].strip():
         headers.pop()
 
-    if not headers:
-        logger.error("No valid headers found in row 1!")
-        return
-
     kw_col = next((i for i, h in enumerate(headers) if "keyword" in h.lower()), -1)
     brand_col = next((i for i, h in enumerate(headers) if "brand" in h.lower()), -1)
-    asin_col = next((i for i, h in enumerate(headers) if "asin" in h.lower()), -1)  # Detect optional ASIN column
+    asin_col = next((i for i, h in enumerate(headers) if "asin" in h.lower()), -1)
 
     if kw_col == -1 or brand_col == -1:
         logger.error("Sheet missing required 'Keyword' and 'Brand' headers.")
@@ -636,7 +500,6 @@ def process_rankings(
     target_col_idx = len(headers) + 1
 
     if target_col_idx > worksheet.col_count:
-        logger.info("Expanding Google Sheet grid (+1 Column)...")
         worksheet.add_cols(1)
 
     safe_update_cell(worksheet, 1, target_col_idx, now_str)
@@ -680,18 +543,15 @@ def process_rankings(
 
 
 if __name__ == "__main__":
-    CREDENTIALS_JSON = "gcp_key.json"
-    SPREADSHEET_ID = "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg"
-    SHEET_NAME = "rank_db"
+    CREDENTIALS_JSON = os.getenv("GCP_KEY_PATH", "gen-lang-client-0598815756-11b746f33e83.json")
+    SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg")
+    SHEET_NAME = os.getenv("SHEET_NAME", "rank_db")
 
-    proxies = []
-    if os.path.exists("proxies.txt"):
-        with open("proxies.txt", "r", encoding="utf-8") as f:
-            proxies = [line.strip() for line in f if line.strip()]
+    proxies =["user-spojetph7l-country-us:73G=71KddvkQucokHq@gate.decodo.com:10001"]
 
     stealth_ranker = StealthAmazonRanker(
         marketplace_url="https://www.amazon.com",
-        zip_code="12345",  # Strictly set to 12345
+        zip_code="12345",
         max_pages=5,
         max_retries=3,
         proxy_list=proxies
