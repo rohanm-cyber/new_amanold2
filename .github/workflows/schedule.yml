@@ -1,4 +1,5 @@
 name: Run Amazon Organic Ranker
+
 on:
   workflow_dispatch:
   schedule:
@@ -7,12 +8,6 @@ on:
 jobs:
   run-scraper:
     runs-on: ubuntu-latest
-    
-    # CASE-SENSITIVE DUPLICATES REMOVED
-    env:
-      PROXY_SERVER_SECRET: ${{ secrets.PROXY_SERVER_SECRET }}
-      HTTP_PROXY: ${{ secrets.PROXY_SERVER_SECRET }}
-      HTTPS_PROXY: ${{ secrets.PROXY_SERVER_SECRET }}
 
     steps:
       - name: Checkout Code
