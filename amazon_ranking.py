@@ -177,12 +177,11 @@ class StealthAmazonRanker:
 
         # Initialize Browser Instance safely
         # Force Undetected Chromedriver to use Version 151
+        # Force Undetected Chromedriver launch
         try:
-            self.driver = uc.Chrome(options=options, version_main=151)
+            self.driver = uc.Chrome(options=options)
         except Exception as e:
             logger.warning(f"Standard Chrome launch failed ({e}), attempting subprocess fallback...")
-            
-            # Re-instantiate fresh options for fallback attempt
             fallback_options = uc.ChromeOptions()
             fallback_options.add_argument("--headless=new")
             fallback_options.add_argument("--no-sandbox")
@@ -190,16 +189,16 @@ class StealthAmazonRanker:
             fallback_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
             if self.proxy_plugin_path:
                 fallback_options.add_extension(self.proxy_plugin_path)
-            
-            self.driver = uc.Chrome(options=fallback_options, version_main=151, use_subprocess=True)
+            self.driver = uc.Chrome(options=fallback_options, use_subprocess=True)
 
-        stealth_js =
-            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-            window.chrome = { runtime: {} };
-    
+        stealth_js = """
+        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+        window.chrome = { runtime: {} };
+        """
         self.driver.execute_script(stealth_js)
+        logger.info("Stealth Chrome Driver successfully loaded.")
         logger.info("Stealth Chrome Driver successfully loaded.")
         
     def close(self):
