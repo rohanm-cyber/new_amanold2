@@ -88,7 +88,7 @@ class StealthAmazonRanker:
 
     def _create_proxy_extension(self, host, port, user, password) -> str:
         """Dynamically creates a Chrome Plugin to handle Decodo Proxy Authentication."""
-        manifest_json = 
+        manifest_json = """
         {
             "version": "1.0.0",
             "manifest_version": 2,
@@ -99,7 +99,7 @@ class StealthAmazonRanker:
         }
     
 
-        background_js = f
+        background_js = f"""
         var config = {{
             mode: "fixed_servers",
             rules: {{
