@@ -2,7 +2,6 @@ import gc
 import logging
 import os
 import random
-import json
 import re
 import sys
 import time
@@ -97,7 +96,7 @@ class StealthAmazonRanker:
             "background": {"scripts": ["background.js"]},
             "minimum_chrome_version":"22.0.0"
         }
-    
+        """
 
         background_js = f"""
         var config = {{
@@ -128,7 +127,7 @@ class StealthAmazonRanker:
             {{urls: ["<all_urls>"]}},
             ['blocking']
         );
-        
+        """
 
         plugin_file = 'decodo_proxy_plugin.zip'
         with zipfile.ZipFile(plugin_file, 'w') as zp:
@@ -163,8 +162,9 @@ class StealthAmazonRanker:
                 self.decodo_host, self.decodo_port, self.decodo_user, self.decodo_pass
             )
             options.add_extension(self.proxy_plugin_path)
-        elif self.proxy_secret:
-            clean_secret = self.proxy_secret.replace("http://", "").replace("https://", "")
+        elif self.proxy_secret or self.proxy_list:
+            active_proxy = self.proxy_secret or self.proxy_list[0]
+            clean_secret = active_proxy.replace("http://", "").replace("https://", "")
             if "@" in clean_secret:
                 auth, host_port = clean_secret.split("@")
                 user, password = auth.split(":")
@@ -177,12 +177,12 @@ class StealthAmazonRanker:
             logger.warning("[!] No Proxy Details Found in Environment!")
 
         # Initialize Browser Instance safely
-        # Force Undetected Chromedriver to use Version 151
-        # Force Undetected Chromedriver launch
         try:
             self.driver = uc.Chrome(options=options)
         except Exception as e:
             logger.warning(f"Standard Chrome launch failed ({e}), attempting subprocess fallback...")
+            
+            # Re-instantiate fresh options for fallback attempt
             fallback_options = uc.ChromeOptions()
             fallback_options.add_argument("--headless=new")
             fallback_options.add_argument("--no-sandbox")
@@ -190,16 +190,16 @@ class StealthAmazonRanker:
             fallback_options.add_argument(f"user-agent={random.choice(self.user_agents)}")
             if self.proxy_plugin_path:
                 fallback_options.add_extension(self.proxy_plugin_path)
+            
             self.driver = uc.Chrome(options=fallback_options, use_subprocess=True)
 
         stealth_js = """
-        Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
-        Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
-        Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
-        window.chrome = { runtime: {} };
+            Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+            Object.defineProperty(navigator, 'plugins', {get: () => [1, 2, 3, 4, 5]});
+            Object.defineProperty(navigator, 'languages', {get: () => ['en-US', 'en']});
+            window.chrome = { runtime: {} };
         """
         self.driver.execute_script(stealth_js)
-        logger.info("Stealth Chrome Driver successfully loaded.")
         logger.info("Stealth Chrome Driver successfully loaded.")
         
     def close(self):
@@ -265,7 +265,7 @@ class StealthAmazonRanker:
             except Exception:
                 pass
 
-            api_js = f
+            api_js = f"""
             var callback = arguments[arguments.length - 1];
             var csrfToken = "";
             try {{
@@ -292,7 +292,7 @@ class StealthAmazonRanker:
             }}).then(res => res.json())
               .then(data => callback({{success: true, data: data}}))
               .catch(err => callback({{success: false, error: err.toString()}}));
-        
+            """
 
             try:
                 api_res = self.driver.execute_async_script(api_js)
@@ -547,7 +547,8 @@ if __name__ == "__main__":
     SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1cTaEFedbs2VbaJN_3MFnn7K4AxYtWY5Cf-ZJ3BUWLeg")
     SHEET_NAME = os.getenv("SHEET_NAME", "rank_db")
 
-    proxies =["user-spojetph7l-country-us:73G=71KddvkQucokHq@gate.decodo.com:10001"]
+    proxy_env = os.getenv("PROXY_SERVER_SECRET", "")
+    proxies = [proxy_env] if proxy_env else ["user-spojetph7l-country-us:73G=71KddvkQucokHq@gate.decodo.com:10001"]
 
     stealth_ranker = StealthAmazonRanker(
         marketplace_url="https://www.amazon.com",
